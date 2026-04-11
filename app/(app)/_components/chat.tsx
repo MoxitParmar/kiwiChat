@@ -42,6 +42,14 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 import { CopyIcon, PencilIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 type TextPart = {
   type: 'text';
@@ -164,6 +172,8 @@ function ConversationChat() {
   const [workflowMode, setWorkflowMode] = useState(false);
   const [workflowPlan, setWorkflowPlan] = useState<{ dag: any; workflowId: string | null } | null>(null);
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [isWorkflowDialogOpen, setIsWorkflowDialogOpen] = useState(false);
+  const [isStoppingWorkflow, setIsStoppingWorkflow] = useState(false);
   const activeWorkflow = useQuery(
     api.workflows.getWorkflow,
     activeWorkflowId ? { workflowId: activeWorkflowId as any } : 'skip'
@@ -225,6 +235,11 @@ function ConversationChat() {
     hydratedConversationIdRef.current = null;
     setEditingId(null);
     setEditingText('');
+    setWorkflowPlan(null);
+    setActiveWorkflowId(null);
+    setIsWorkflowDialogOpen(false);
+    setIsStoppingWorkflow(false);
+    postedWorkflowSummaryRef.current = null;
     lastSyncedSignatureRef.current = '';
   }, [selectedConversationId]);
 
@@ -376,22 +391,93 @@ function ConversationChat() {
     }
   };
 
+  const formatWorkflowNodeOutput = (nodeOutput: string | undefined) => {
+    if (!nodeOutput) {
+      return '';
+    }
+
+    try {
+      const parsed = JSON.parse(nodeOutput);
+      const sections: string[] = [];
+      const normalizeText = (value: unknown) => {
+        if (typeof value !== 'string') {
+          return '';
+        }
+
+        return value
+          .replace(/\*\*/g, '')
+          .replace(/`/g, '')
+          .replace(/\r/g, '')
+          .trim();
+      };
+
+      const textValue = normalizeText(parsed?.text);
+      const requestValue = normalizeText(parsed?.request);
+
+      if (textValue) {
+        sections.push(`text:\n${textValue}`);
+      }
+
+      if (requestValue) {
+        sections.push(`request:\n${requestValue}`);
+      }
+
+      if (parsed?.params !== undefined) {
+        let paramsForDisplay: unknown = parsed.params;
+
+        if (
+          paramsForDisplay &&
+          typeof paramsForDisplay === 'object' &&
+          !Array.isArray(paramsForDisplay)
+        ) {
+          const copy = { ...(paramsForDisplay as Record<string, unknown>) };
+          if (typeof copy.request === 'string' && normalizeText(copy.request) === requestValue) {
+            delete copy.request;
+          }
+          if ('toolResults' in copy) {
+            delete copy.toolResults;
+          }
+          paramsForDisplay = copy;
+        }
+
+        const hasObjectParams =
+          paramsForDisplay &&
+          typeof paramsForDisplay === 'object' &&
+          !Array.isArray(paramsForDisplay) &&
+          Object.keys(paramsForDisplay as Record<string, unknown>).length > 0;
+
+        if (hasObjectParams) {
+          sections.push(`params:\n${JSON.stringify(paramsForDisplay, null, 2)}`);
+        } else if (typeof paramsForDisplay === 'string' && paramsForDisplay.trim()) {
+          sections.push(`params:\n${paramsForDisplay.trim()}`);
+        }
+      }
+
+      if (sections.length > 0) {
+        return sections.join('\n\n');
+      }
+
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return nodeOutput;
+    }
+  };
+
   const buildWorkflowCompletionSummary = (nodes: any[]) => {
     const completedNodes = nodes.filter((n) => n.status === 'completed');
     if (completedNodes.length === 0) {
       return 'Workflow completed, but there was no output to summarize.';
     }
 
-    const lastOutput = extractWorkflowNodeText(completedNodes[completedNodes.length - 1]?.output);
-    if (lastOutput) {
-      return `Workflow completed. ${lastOutput}`;
-    }
-
     const stepLines = completedNodes
       .map((node, index) => {
         const text = extractWorkflowNodeText(node.output);
         if (!text) return '';
-        return `${index + 1}. ${node.tool}: ${text}`;
+        const compactText = text.replace(/\s+/g, ' ').trim();
+        const shortText = compactText.length > 220
+          ? `${compactText.slice(0, 220)}...`
+          : compactText;
+        return `${index + 1}. ${node.tool}: ${shortText}`;
       })
       .filter(Boolean);
 
@@ -405,11 +491,43 @@ function ConversationChat() {
     const completed = nodes.filter(n => n.status === 'completed').length;
     const failed = nodes.filter(n => n.status === 'failed').length;
     const running = nodes.filter(n => n.status === 'running').length;
+    const stopped = nodes.some((n) => typeof n.error === 'string' && n.error.includes('Stopped by user'));
+    if (stopped) return { label: 'Workflow stopped', variant: 'stopped' as const };
     if (failed > 0) return { label: 'Workflow failed', variant: 'failed' as const };
     if (completed === total) return { label: 'Workflow complete', variant: 'complete' as const };
     if (running > 0) return { label: `Running — ${completed}/${total} done`, variant: 'running' as const };
     return { label: 'Starting...', variant: 'pending' as const };
   };
+
+  const stopWorkflowExecution = async () => {
+    if (!activeWorkflowId || isStoppingWorkflow) {
+      return;
+    }
+
+    setIsStoppingWorkflow(true);
+    try {
+      const res = await fetch('/api/workflow/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflowId: activeWorkflowId }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to stop workflow');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to stop workflow. Check console.');
+    } finally {
+      setIsStoppingWorkflow(false);
+    }
+  };
+
+  useEffect(() => {
+    if (workflowPlan || activeWorkflowId) {
+      setIsWorkflowDialogOpen(true);
+    }
+  }, [workflowPlan, activeWorkflowId]);
 
   useEffect(() => {
     if (!activeWorkflowId || !activeWorkflow) {
@@ -440,13 +558,14 @@ function ConversationChat() {
       }
 
       const failedNode = (activeWorkflow.nodes ?? []).find((node: any) => node.status === 'failed');
+      const isStoppedByUser = typeof failedNode?.error === 'string' && failedNode.error.includes('Stopped by user');
       const errorText = failedNode?.error ? ` Error: ${failedNode.error}` : '';
       setMessages((current) => [
         ...current,
         {
           id: `workflow-summary-${activeWorkflowId}`,
           role: 'assistant',
-          parts: [{ type: 'text', text: `Workflow failed.${errorText}` }],
+          parts: [{ type: 'text', text: isStoppedByUser ? 'Workflow stopped.' : `Workflow failed.${errorText}` }],
         } as UIMessage,
       ]);
       postedWorkflowSummaryRef.current = activeWorkflowId;
@@ -549,144 +668,168 @@ function ConversationChat() {
         <ConversationScrollButton />
       </Conversation>
 
-      {activeWorkflowId && activeWorkflow && (
-        <div className="mt-4 w-full min-w-0 rounded-xl border bg-sidebar p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-medium">Workflow execution</p>
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => setActiveWorkflowId(null)}
-            >
-              Dismiss
-            </button>
-          </div>
+      <Dialog open={isWorkflowDialogOpen} onOpenChange={setIsWorkflowDialogOpen}>
+        <DialogContent className="min-w-1/2 max-w-none  h-[90dvh] overflow-hidden p-0">
+          <div className="flex h-full min-h-0 flex-col p-6 ">
+            <DialogHeader>
+              <DialogTitle>{workflowPlan ? 'Workflow plan' : 'Workflow execution'}</DialogTitle>
+              <DialogDescription>
+                {workflowPlan
+                  ? 'Review the generated plan before starting execution.'
+                  : 'Monitor progress and stop execution if needed.'}
+              </DialogDescription>
+            </DialogHeader>
 
-          <ol className="flex flex-col gap-2">
-            {activeWorkflow.nodes.map((node: any) => (
-              <li
-                key={node.nodeId}
-                className="flex min-w-0 flex-col gap-1 rounded-lg border bg-background p-3 text-sm"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-mono text-xs text-muted-foreground shrink-0">
-                      {node.nodeId}
-                    </span>
-                    <span className="font-medium truncate">{node.tool}</span>
-                  </div>
+            <div className="mt-4 min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1">
+              {activeWorkflowId && activeWorkflow && (
+                <div className="w-full min-w-0 rounded-xl border bg-sidebar p-4">
+                  <ol className="flex flex-col gap-2">
+                    {activeWorkflow.nodes.map((node: any) => (
+                      <li
+                        key={node.nodeId}
+                        className="flex min-w-0 flex-col gap-1 rounded-lg border bg-background p-3 text-sm"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                              {node.nodeId}
+                            </span>
+                            <span className="truncate font-medium">{node.tool}</span>
+                          </div>
 
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-                      node.status === 'completed'
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                        : node.status === 'failed'
-                        ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-                        : node.status === 'running'
-                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                        : 'bg-muted text-muted-foreground'
-                    }`}
-                  >
-                    {node.status === 'running' ? 'Running...' : node.status}
-                  </span>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                              node.status === 'completed'
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                                : node.status === 'failed'
+                                ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                                : node.status === 'running'
+                                ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                                : 'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            {node.status === 'running' ? 'Running...' : node.status}
+                          </span>
+                        </div>
+
+                        {node.status === 'completed' && node.output && (() => {
+                          try {
+                            return (
+                              <pre className="mt-1 max-h-32 w-full max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word rounded bg-muted p-2 text-xs text-muted-foreground">
+                                {formatWorkflowNodeOutput(node.output)}
+                              </pre>
+                            );
+                          } catch {
+                            return (
+                              <p className="mt-1 text-xs text-muted-foreground">{node.output}</p>
+                            );
+                          }
+                        })()}
+
+                        {node.status === 'failed' && node.error && (
+                          <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                            {node.error}
+                          </p>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+
+                  {(() => {
+                    const summary = getWorkflowSummary(activeWorkflow.nodes);
+                    return (
+                      <div
+                        className={`mt-3 rounded-lg px-3 py-2 text-sm font-medium ${
+                          summary.variant === 'complete'
+                            ? 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                            : summary.variant === 'failed'
+                            ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
+                            : summary.variant === 'stopped'
+                            ? 'bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200'
+                            : 'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        {summary.label}
+                      </div>
+                    );
+                  })()}
                 </div>
+              )}
 
-                {node.status === 'completed' && node.output && (() => {
-                  try {
-                    const parsed = JSON.parse(node.output);
-                    return (
-                      <pre className="mt-1 w-full max-w-full max-h-32 overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word rounded bg-muted p-2 text-xs text-muted-foreground">
-                        {JSON.stringify(parsed, null, 2)}
-                      </pre>
-                    );
-                  } catch {
-                    return (
-                      <p className="mt-1 text-xs text-muted-foreground">{node.output}</p>
-                    );
-                  }
-                })()}
+              {workflowPlan && (
+                <div className="w-full min-w-0 rounded-xl border bg-sidebar p-4">
+                  <ol className="flex flex-col gap-2">
+                    {workflowPlan.dag?.nodes?.map((node: any) => (
+                      <li key={node.id} className="min-w-0 rounded-lg border bg-background p-3 text-sm">
+                        <span className="font-mono text-xs text-muted-foreground">{node.id}</span>
+                        <span className="mx-2 font-medium">{node.tool}</span>
+                        {node.dependsOn?.length > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            after: {node.dependsOn.join(', ')}
+                          </span>
+                        )}
+                        <pre className="mt-1 w-full max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
+                          {JSON.stringify(node.params, null, 2)}
+                        </pre>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
 
-                {node.status === 'failed' && node.error && (
-                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                    {node.error}
-                  </p>
+            <DialogFooter className="mt-4 shrink-0 justify-between border-t bg-background pt-4 sm:justify-between">
+              {activeWorkflowId && activeWorkflow && (
+                <button
+                  type="button"
+                  className="rounded-md border border-red-300 px-4 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+                  onClick={() => void stopWorkflowExecution()}
+                  disabled={isStoppingWorkflow || activeWorkflow.status !== 'running'}
+                >
+                  {isStoppingWorkflow ? 'Stopping...' : 'Stop workflow'}
+                </button>
+              )}
+
+              <div className="flex gap-2">
+                {workflowPlan && (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground"
+                      onClick={async () => {
+                        if (!workflowPlan?.workflowId) return;
+                        try {
+                          const res = await fetch('/api/workflow/execute', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ workflowId: workflowPlan.workflowId }),
+                          });
+                          if (!res.ok) throw new Error('Failed to start workflow');
+                          setActiveWorkflowId(workflowPlan.workflowId);
+                          setWorkflowPlan(null);
+                        } catch (err) {
+                          console.error(err);
+                          alert('Failed to start workflow. Check console.');
+                        }
+                      }}
+                    >
+                      Approve and run
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border px-4 py-1.5 text-sm"
+                      onClick={() => setWorkflowPlan(null)}
+                    >
+                      Cancel
+                    </button>
+                  </>
                 )}
-              </li>
-            ))}
-          </ol>
 
-          {(() => {
-            const summary = getWorkflowSummary(activeWorkflow.nodes);
-            return (
-              <div
-                className={`mt-3 rounded-lg px-3 py-2 text-sm font-medium ${
-                  summary.variant === 'complete'
-                    ? 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
-                    : summary.variant === 'failed'
-                    ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-                    : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {summary.label}
               </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {workflowPlan && (
-        <div className="mt-4 w-full min-w-0 rounded-xl border bg-sidebar p-4">
-          <p className="mb-2 text-sm font-medium">Workflow plan</p>
-          <ol className="flex flex-col gap-2">
-            {workflowPlan.dag?.nodes?.map((node: any) => (
-              <li key={node.id} className="min-w-0 rounded-lg border bg-background p-3 text-sm">
-                <span className="font-mono text-xs text-muted-foreground">{node.id}</span>
-                <span className="mx-2 font-medium">{node.tool}</span>
-                {node.dependsOn?.length > 0 && (
-                  <span className="text-xs text-muted-foreground">
-                    after: {node.dependsOn.join(', ')}
-                  </span>
-                )}
-                <pre className="mt-1 w-full max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word text-xs text-muted-foreground">
-                  {JSON.stringify(node.params, null, 2)}
-                </pre>
-              </li>
-            ))}
-          </ol>
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              className="rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground"
-              onClick={async () => {
-                if (!workflowPlan?.workflowId) return;
-                try {
-                  const res = await fetch('/api/workflow/execute', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ workflowId: workflowPlan.workflowId }),
-                  });
-                  if (!res.ok) throw new Error('Failed to start workflow');
-                  setActiveWorkflowId(workflowPlan.workflowId);
-                  setWorkflowPlan(null);
-                  // Phase 5 will show the live progress card here
-                } catch (err) {
-                  console.error(err);
-                  alert('Failed to start workflow. Check console.');
-                }
-              }}
-            >
-              Approve and run
-            </button>
-            <button
-              type="button"
-              className="rounded-md border px-4 py-1.5 text-sm"
-              onClick={() => setWorkflowPlan(null)}
-            >
-              Cancel
-            </button>
+            </DialogFooter>
           </div>
-        </div>
-      )}
+        </DialogContent>
+      </Dialog>
 
       <div className="sticky bottom-0 mt-4 bg-background/95 pb-2 pt-2 backdrop-blur supports-backdrop-filter:bg-background/80">
         <PromptInput
@@ -695,6 +838,15 @@ function ConversationChat() {
             const trimmed = text.trim();
             if (!trimmed) {
               return;
+            }
+
+            if (workflowModeRef.current) {
+              // Start each workflow request with a clean workflow UI state.
+              setWorkflowPlan(null);
+              setActiveWorkflowId(null);
+              setIsWorkflowDialogOpen(false);
+              setIsStoppingWorkflow(false);
+              postedWorkflowSummaryRef.current = null;
             }
 
             await ensureConversation();
@@ -711,6 +863,15 @@ function ConversationChat() {
           </PromptInputBody>
           <PromptInputFooter>
             <div className="flex items-center gap-2">
+              {(workflowPlan || activeWorkflowId) && (
+                <button
+                  type="button"
+                  onClick={() => setIsWorkflowDialogOpen(true)}
+                  className="rounded-full border px-3 py-1 text-xs font-medium transition-colors border-border bg-background text-muted-foreground hover:bg-muted"
+                >
+                  View workflow
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setWorkflowMode(prev => !prev)}
