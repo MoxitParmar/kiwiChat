@@ -1,0 +1,24 @@
+"use server";
+
+import { auth, clerkClient } from "@clerk/nextjs/server";
+import { UserProfileUpdateFormValues } from "./index";
+
+export async function updateUserProfile(data: UserProfileUpdateFormValues) {
+  const { userId } = await auth();
+
+  if (!userId) {
+    throw new Error("Failed to update profile.");
+  }
+
+  const client = await clerkClient();
+
+  await client.users.updateUser(userId, {
+    username: data.username,
+    firstName: data.firstName,
+    lastName: data.lastName,
+  });
+
+  if (data.picture && data.picture.size > 0) {
+    await client.users.updateUserProfileImage(userId, { file: data.picture });
+  }
+}
