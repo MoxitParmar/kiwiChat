@@ -1,6 +1,10 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
+import { type UIMessage } from 'ai';
+import { useMutation, useQuery } from 'convex/react';
+import type { Id } from '@/convex/_generated/dataModel';
+import { api } from '@/convex/_generated/api';
 import {
   Conversation,
   ConversationContent,
@@ -22,15 +26,23 @@ import {
   PromptInputTextarea,
 } from '@/components/ai-elements/prompt-input';
 import { CopyIcon, PencilIcon, Trash2Icon } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 type TextPart = {
   type: 'text';
   text: string;
 };
 
-const getMessageText = (parts: readonly unknown[]) =>
-  parts
+type PersistedMessage = {
+  _id: string;
+  clientMessageId?: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+};
+
+function getMessageText(parts: readonly unknown[]) {
+  return parts
     .filter((part): part is TextPart => {
       if (!part || typeof part !== 'object') {
         return false;
@@ -41,13 +53,114 @@ const getMessageText = (parts: readonly unknown[]) =>
     })
     .map(part => part.text)
     .join('');
+}
 
-export default function Chat() {
-  const { messages, sendMessage, setMessages, status, stop } = useChat();
+function getMessageSignature(messages: UIMessage[]) {
+  return JSON.stringify(
+    messages.map(message => ({
+      id: message.id,
+      role: message.role,
+      text: getMessageText(message.parts),
+    }))
+  );
+}
+
+function toUIMessage(message: PersistedMessage): UIMessage {
+  return {
+    id: message.clientMessageId ?? message._id,
+    role: message.role,
+    parts: [{ type: 'text', text: message.content }],
+  };
+}
+
+function ConversationChat() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const createConversation = useMutation(api.chat.createConversation);
+  const syncConversationMessages = useMutation(api.chat.syncConversationMessages);
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const lastSyncedSignatureRef = useRef('');
+  const hydratedConversationIdRef = useRef<string | null>(null);
+  const selectedConversationId = searchParams.get('conversationId');
 
-  const hasMessages = messages.length > 0;
+  const persistedMessages = useQuery(
+    api.chat.listMessages,
+    selectedConversationId
+      ? {
+          conversationId: selectedConversationId as Id<'conversations'>,
+          limit: 500,
+        }
+      : 'skip'
+  );
+
+  const { messages, sendMessage, setMessages, status, stop } = useChat();
+
+  useEffect(() => {
+    hydratedConversationIdRef.current = null;
+    setEditingId(null);
+    setEditingText('');
+    lastSyncedSignatureRef.current = '';
+  }, [selectedConversationId]);
+
+  const persistedUiMessages = useMemo(
+    () => (persistedMessages ?? []).map(message => toUIMessage(message)),
+    [persistedMessages]
+  );
+
+  const persistedSignature = useMemo(
+    () => getMessageSignature(persistedUiMessages),
+    [persistedUiMessages]
+  );
+
+  useEffect(() => {
+    if (!selectedConversationId) {
+      setMessages([]);
+      return;
+    }
+
+    if (persistedMessages === undefined) {
+      return;
+    }
+
+    setMessages(persistedUiMessages);
+    hydratedConversationIdRef.current = selectedConversationId;
+    lastSyncedSignatureRef.current = persistedSignature;
+  }, [
+    persistedMessages,
+    persistedSignature,
+    persistedUiMessages,
+    selectedConversationId,
+    setMessages,
+  ]);
+
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      status !== 'ready' ||
+      hydratedConversationIdRef.current !== selectedConversationId
+    ) {
+      return;
+    }
+
+    const nextSignature = getMessageSignature(messages);
+    if (!nextSignature || nextSignature === lastSyncedSignatureRef.current) {
+      return;
+    }
+
+    lastSyncedSignatureRef.current = nextSignature;
+
+    void syncConversationMessages({
+      conversationId: selectedConversationId as Id<'conversations'>,
+      messages: messages.map(message => ({
+        clientMessageId: message.id,
+        role: message.role,
+        content: getMessageText(message.parts),
+      })),
+    });
+  }, [messages, selectedConversationId, status, syncConversationMessages]);
 
   const editingMessage = useMemo(
     () => messages.find(message => message.id === editingId),
@@ -108,14 +221,31 @@ export default function Chat() {
     setEditingText('');
   };
 
+  const ensureConversation = async () => {
+    if (selectedConversationId) {
+      return selectedConversationId;
+    }
+
+    const result = await createConversation({});
+    const nextConversationId = result.conversationId;
+
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('conversationId', nextConversationId);
+    router.replace(`${pathname}?${params.toString()}`);
+
+    return nextConversationId;
+  };
+
+  const hasMessages = messages.length > 0;
+
   return (
-    <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full  flex-col px-4 py-4 sm:px-6">
+    <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full flex-col px-4 py-4 sm:px-6">
       <Conversation className="rounded-xl border bg-sidebar">
         <ConversationContent className="p-4">
           {!hasMessages && (
             <ConversationEmptyState
               description="Ask anything to start the conversation."
-              title="Your AI Chat"
+              title="Your Agentic AI Chat "
             />
           )}
 
@@ -188,7 +318,7 @@ export default function Chat() {
                   </MessageAction>
                 </MessageActions>
               </Message>
-            );
+            )
           })}
         </ConversationContent>
         <ConversationScrollButton />
@@ -196,13 +326,14 @@ export default function Chat() {
 
       <div className="sticky bottom-0 mt-4 bg-background/95 pb-2 pt-2 backdrop-blur supports-backdrop-filter:bg-background/80">
         <PromptInput
-          onSubmit={({ text }, event) => {
+          onSubmit={async ({ text }, event) => {
             event.preventDefault();
             const trimmed = text.trim();
             if (!trimmed) {
               return;
             }
 
+            await ensureConversation();
             sendMessage({ text: trimmed });
           }}
         >
@@ -216,5 +347,9 @@ export default function Chat() {
         </PromptInput>
       </div>
     </div>
-  );
+  )
+}
+
+export default function Chat() {
+  return <ConversationChat />
 }

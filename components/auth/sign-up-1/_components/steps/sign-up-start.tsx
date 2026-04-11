@@ -62,7 +62,7 @@ export default function SignUpStart({
       <Card className="w-full sm:w-96 p-3">
         <CardContent className="flex flex-col gap-y-6 p-5">
           <div className="flex flex-col gap-y-2">
-            <CardTitle>Acme, Inc.</CardTitle>
+            <CardTitle>chat.1ll.app</CardTitle>
             <CardDescription>
               Please fill out the form to create your account.
             </CardDescription>

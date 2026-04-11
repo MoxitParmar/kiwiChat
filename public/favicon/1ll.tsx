@@ -1,0 +1,52 @@
+import * as React from "react";
+const SVGComponent = (props: any) => (
+  <svg
+    width={226}
+    height={260}
+    viewBox="0 0 226 260"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    {...props}
+  >
+    <line
+      x1={17.5}
+      y1={-17.5}
+      x2={241.533}
+      y2={-17.5}
+      transform="matrix(0.000335564 1 -1 0.00027096 190.723 0.00474548)"
+      stroke="black"
+      strokeWidth={35}
+      strokeLinecap="round"
+    />
+    <line
+      x1={17.5}
+      y1={-17.5}
+      x2={241.533}
+      y2={-17.5}
+      transform="matrix(0.000335564 1 -1 0.00027096 115.788 0.00643921)"
+      stroke="black"
+      strokeWidth={35}
+      strokeLinecap="round"
+    />
+    <line
+      x1={17.5}
+      y1={-17.5}
+      x2={241.533}
+      y2={-17.5}
+      transform="matrix(0.000452024 1 -1 0.00020115 40.81 0.00643921)"
+      stroke="black"
+      strokeWidth={35}
+      strokeLinecap="round"
+    />
+    <line
+      x1={17.5001}
+      y1={63.2933}
+      x2={57.0494}
+      y2={19.3172}
+      stroke="black"
+      strokeWidth={35}
+      strokeLinecap="round"
+    />
+  </svg>
+);
+export default SVGComponent;

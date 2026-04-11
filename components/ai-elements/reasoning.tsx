@@ -205,7 +205,16 @@ export type ReasoningContentProps = ComponentProps<
 };
 
 const streamdownPlugins = { cjk, code, math, mermaid };
-
+const streamdownComponents = {
+  p: ({ children, ...props }: any) => (
+    <p {...props} suppressHydrationWarning>
+      {children}
+    </p>
+  ),
+  img: ({ src, alt, ...props }: any) => (
+    <img src={src} alt={alt} {...props} suppressHydrationWarning />
+  ),
+};
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (
     <CollapsibleContent
@@ -215,8 +224,11 @@ export const ReasoningContent = memo(
         className
       )}
       {...props}
+        suppressHydrationWarning
     >
-      <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
+      <div suppressHydrationWarning>
+        <Streamdown plugins={streamdownPlugins} components={streamdownComponents}>{children}</Streamdown>
+      </div>
     </CollapsibleContent>
   )
 );
