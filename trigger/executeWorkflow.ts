@@ -3,41 +3,9 @@ import { ConvexHttpClient } from 'convex/browser';
 import { api } from '@/convex/_generated/api';
 import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp';
 import { Composio } from '@composio/core';
+import { generateText, stepCountIs } from 'ai';
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
-// Topological sort using Kahn's algorithm
-function topologicalSort(nodes: any[]): any[][] {
-  const inDegree: Record<string, number> = {};
-  const dependents: Record<string, string[]> = {};
-
-  for (const node of nodes) {
-    inDegree[node.id] = node.dependsOn?.length ?? 0;
-    dependents[node.id] = dependents[node.id] ?? [];
-    for (const dep of node.dependsOn ?? []) {
-      dependents[dep] = dependents[dep] ?? [];
-      dependents[dep].push(node.id);
-    }
-  }
-
-  const nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const waves: any[][] = [];
-  let ready = nodes.filter(n => inDegree[n.id] === 0);
-
-  while (ready.length > 0) {
-    waves.push(ready);
-    const next: any[] = [];
-    for (const node of ready) {
-      for (const dep of dependents[node.id] ?? []) {
-        inDegree[dep]--;
-        if (inDegree[dep] === 0) next.push(nodeMap[dep]);
-      }
-    }
-    ready = next;
-  }
-
-  return waves;
-}
 
 // Replace {{nX.output.field}} with actual values from completed map
 function interpolateParams(
@@ -61,12 +29,7 @@ function interpolateParams(
   return result;
 }
 
-// Call a Composio MCP tool by name using the same pattern as app/api/chat/route.ts
-async function callComposioTool(
-  toolName: string,
-  params: Record<string, any>,
-  userId: string
-): Promise<any> {
+async function getComposioNodeTools(userId: string) {
   const composioApiKey = process.env.COMPOSIO_API_KEY;
   if (!composioApiKey) throw new Error('COMPOSIO_API_KEY not set');
 
@@ -80,37 +43,42 @@ async function callComposioTool(
     },
   });
 
-  const tools = await client.tools();
-  const tool = tools[toolName];
-  if (!tool) throw new Error(`Tool ${toolName} not found or not connected`);
+  return client.tools();
+}
 
-  // Composio MCP tools are called via the tool's execute function
-  const result = await tool.execute(params, {} as any);
+// Execute one workflow node as a normal Composio-enabled chat request.
+async function runNodeRequest(
+  requestText: string,
+  params: Record<string, any>,
+  previousOutputs: Record<string, any>,
+  tools: Record<string, any>
+): Promise<any> {
+  const context = Object.keys(previousOutputs).length > 0
+    ? `\n\nPrevious step outputs (JSON):\n${JSON.stringify(previousOutputs)}`
+    : '';
 
-  // Composio hides errors inside content[0].text as JSON with successful: false
-  // isError on the outer object is always false even on failures — do not trust it
-  const contentText = (result as any)?.content?.[0]?.text;
-  if (contentText) {
-    let parsed: any;
-    try {
-      parsed = JSON.parse(contentText);
-    } catch {
-      // content is not JSON, return raw result
-      return result;
-    }
+  const nodePrompt = `${requestText}${context}`;
+  const result = await generateText({
+    model: "xai/grok-4.1-fast-non-reasoning" as any,
+    system:
+      'You are executing one automation step. Use tools whenever the request needs external data or side effects (e.g., GitHub fetch, Slack message). Always finish with a concise final text that states what was done and key result details.',
+    prompt: nodePrompt,
+    stopWhen: stepCountIs(10),
+    tools,
+  });
 
-    if (parsed.successful === false) {
-      // Throw so the executor catches it, marks node failed, and Trigger.dev retries
-      throw new Error(
-        `Tool ${toolName} failed: ${parsed.error ?? 'successful: false'} (log_id: ${parsed.log_id ?? 'unknown'})`
-      );
-    }
+  const finalText = result.text?.trim();
+  const toolResults = Array.isArray((result as any).toolResults) ? (result as any).toolResults : [];
+  const fallbackText = toolResults.length > 0
+    ? JSON.stringify(toolResults)
+    : 'Step executed, but no textual response was returned.';
 
-    // Return the inner data payload, not the outer MCP wrapper
-    return parsed.data ?? parsed;
-  }
-
-  return result;
+  return {
+    text: finalText || fallbackText,
+    request: requestText,
+    params,
+    toolResults,
+  };
 }
 
 export const executeWorkflow = task({
@@ -123,67 +91,64 @@ export const executeWorkflow = task({
   }) => {
     const { workflowId, dagJson, userId } = payload;
     const dag = JSON.parse(dagJson);
-    const waves = topologicalSort(dag.nodes);
+    const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
+    if (nodes.length === 0) {
+      throw new Error('Workflow DAG has no nodes to execute');
+    }
     const completed: Record<string, any> = {};
+    const tools = await getComposioNodeTools(userId);
 
     await convex.mutation(api.workflows.updateWorkflowStatus, {
       workflowId: workflowId as any,
       status: 'running',
     });
 
-    await convex.mutation(api.workflows.updateNodeStatus, {
-      workflowId: workflowId as any,
-      nodeId: dag.nodes[0].id,
-      status: 'running',
-    });
+    for (const node of nodes) {
+      try {
+        await convex.mutation(api.workflows.updateNodeStatus, {
+          workflowId: workflowId as any,
+          nodeId: node.id,
+          status: 'running',
+        });
 
-    // Mark workflow as running
-    // (no direct workflow status mutation exposed — add one or handle via updateNodeStatus waves)
+        const interpolatedParams = interpolateParams(
+          node.params ?? {},
+          completed
+        );
 
-    for (const wave of waves) {
-      await Promise.all(
-        wave.map(async (node: any) => {
-          try {
-            await convex.mutation(api.workflows.updateNodeStatus, {
-              workflowId: workflowId as any,
-              nodeId: node.id,
-              status: 'running',
-            });
+        const requestText =
+          (typeof interpolatedParams.request === 'string' && interpolatedParams.request.trim())
+            ? interpolatedParams.request
+            : node.tool;
 
-            const interpolatedParams = interpolateParams(
-              node.params ?? {},
-              completed
-            );
+        const result = await runNodeRequest(
+          requestText,
+          interpolatedParams,
+          completed,
+          tools,
+        );
 
-            const result = await callComposioTool(
-              node.tool,
-              interpolatedParams,
-              userId
-            );
+        completed[node.id] = result;
 
-            completed[node.id] = result;
-
-            await convex.mutation(api.workflows.updateNodeStatus, {
-              workflowId: workflowId as any,
-              nodeId: node.id,
-              status: 'completed',
-              output: JSON.stringify(result),
-            });
-          } catch (err: any) {
-            await convex.mutation(api.workflows.updateNodeStatus, {
-              workflowId: workflowId as any,
-              nodeId: node.id,
-              status: 'failed',
-              error: err?.message ?? 'Unknown error',
-            });
-            await convex.mutation(api.workflows.updateWorkflowStatus, {
-              workflowId: workflowId as any,
-              status: 'failed',
-            });
-            throw err; // let Trigger.dev retry the whole task
-          }
-        })
-      );
+        await convex.mutation(api.workflows.updateNodeStatus, {
+          workflowId: workflowId as any,
+          nodeId: node.id,
+          status: 'completed',
+          output: JSON.stringify(result),
+        });
+      } catch (err: any) {
+        await convex.mutation(api.workflows.updateNodeStatus, {
+          workflowId: workflowId as any,
+          nodeId: node.id,
+          status: 'failed',
+          error: err?.message ?? 'Unknown error',
+        });
+        await convex.mutation(api.workflows.updateWorkflowStatus, {
+          workflowId: workflowId as any,
+          status: 'failed',
+        });
+        throw err; // let Trigger.dev retry the whole task
+      }
     }
 
     await convex.mutation(api.workflows.updateWorkflowStatus, {

@@ -1,20 +1,31 @@
 
+"use client"
 
 import { HeaderUserSection } from './_components/header-user-section'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { ThemeToggleButton } from './_components/theme-toggle'
-import React from 'react'
-import { SidebarWithChatHistory } from './_components/app-sidebar'
+import React, { useEffect, useState } from 'react'
+import {  SidebarWithChatHistory } from './_components/app-sidebar'
 
 const layout = ({ children }: { children: React.ReactNode }) => {
+  const [isMounted, setIsMounted] = useState(false)
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+
   return (
         <SidebarProvider >
-       <SidebarWithChatHistory/>
-       <SidebarInset>
+      {isMounted ? (
+        <SidebarWithChatHistory/>
+      ) : (
+        <div className="hidden w-64 bg-sidebar md:block" aria-hidden="true" />
+      )}
+      <SidebarInset>
       <>
         <header className="flex h-16 shrink-0 items-center justify-between gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12  px-4 ">
           <div className="flex items-center gap-2">
-            {/*<SidebarTrigger className="-ml-1 " variant={"outline"} />*/}
+            <SidebarTrigger className="-ml-1 " variant={"outline"} />
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggleButton />
@@ -23,8 +34,8 @@ const layout = ({ children }: { children: React.ReactNode }) => {
         </header>
           <div>{children}</div>
       </>
-       </SidebarInset>
-     </SidebarProvider>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }
 

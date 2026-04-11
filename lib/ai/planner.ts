@@ -11,65 +11,79 @@ export interface DagJson {
   nodes: DagNode[];
 }
 
-export interface ToolSchema {
-  name: string;
-  description: string;
-  parameters: Record<string, any>;
+function isValidDagNode(node: DagNode | undefined): boolean {
+  return Boolean(
+    node?.id &&
+    node?.tool &&
+    typeof node?.params?.request === 'string' &&
+    node.params.request.trim()
+  );
+}
+
+function parseDagText(text: string): DagJson {
+  const trimmed = text.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  const json = start >= 0 && end >= start ? trimmed.slice(start, end + 1) : trimmed;
+  return JSON.parse(json) as DagJson;
 }
 
 export async function runPlanner(
   userMessage: string,
-  connectedTools: ToolSchema[]
 ): Promise<string> {
-  const toolDocs = connectedTools
-    .map(
-      (t) =>
-        `Tool: ${t.name}\nDescription: ${t.description}\nParameters schema: ${JSON.stringify(t.parameters, null, 2)}`
-    )
-    .join('\n\n---\n\n');
-
   const systemPrompt = `You are a workflow planner. The user wants to automate a multi-step task.
 Convert their request into a DAG JSON. Return ONLY valid JSON — no explanation, no markdown, no backticks.
-
-Here are the EXACT tools available with their full parameter schemas:
-
-${toolDocs}
 
 Output this exact JSON shape:
 {
   "nodes": [
     {
       "id": "n1",
-      "tool": "EXACT_TOOL_NAME",
-      "params": { "exactParamName": "value" },
+      "tool": "short action label",
+      "params": { "request": "natural language request for this step" },
       "dependsOn": []
     },
     {
       "id": "n2", 
-      "tool": "ANOTHER_EXACT_TOOL_NAME",
-      "params": { "exactParamName": "{{n1.output.fieldName}}" },
+      "tool": "next action label",
+      "params": { "request": "step request that can reference previous output like {{n1.output.text}}" },
       "dependsOn": ["n1"]
     }
   ]
 }
 
 Rules you MUST follow:
-- tool value MUST be one of the exact tool names listed above. Never invent or guess a tool name.
-- params keys MUST match the exact parameter names from that tool's parameters schema above.
-- dependsOn lists node ids that must fully complete before this node starts.
-- Nodes with empty dependsOn array will run in parallel — use this for independent steps.
+- Return nodes in execution order.
+- dependsOn is optional metadata; execution follows node array order.
+- Every node MUST include params.request.
+- tool must be a concise human-readable label of the step, not a tool slug.
 - Use {{nodeId.output.fieldName}} syntax to pass output from one node as input to another.
 - Keep the DAG as simple as possible. Use the minimum number of nodes to complete the task.
-- Do not add intermediate nodes for schema discovery or connection checking.
+- Do not add nodes for tool discovery.
 - Only include nodes that directly accomplish the user's stated goal.`;
 
-  // Import the model the same way it is imported in app/api/chat/route.ts
-  // Use the same model string already used in this project
   const { text } = await generateText({
     model: "xai/grok-4.1-fast-non-reasoning" as any,
     system: systemPrompt,
     prompt: userMessage,
   });
 
-  return text.trim();
+  let dag = parseDagText(text);
+  const hasInvalidNode = (dag.nodes ?? []).some((node) => !isValidDagNode(node));
+
+  if (hasInvalidNode) {
+    const retry = await generateText({
+      model: "xai/grok-4.1-fast-non-reasoning" as any,
+      system: systemPrompt,
+      prompt: `${userMessage}\n\nYour last DAG was invalid. Regenerate with nodes that all include: id, tool, params.request, dependsOn.`,
+    });
+    dag = parseDagText(retry.text);
+
+    const stillInvalid = (dag.nodes ?? []).some((node) => !isValidDagNode(node));
+    if (stillInvalid) {
+      throw new Error('Planner generated an invalid DAG shape after retry.');
+    }
+  }
+
+  return JSON.stringify(dag, null, 2);
 }

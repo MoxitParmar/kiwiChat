@@ -168,9 +168,15 @@ function ConversationChat() {
     api.workflows.getWorkflow,
     activeWorkflowId ? { workflowId: activeWorkflowId as any } : 'skip'
   );
+  const postedWorkflowSummaryRef = useRef<string | null>(null);
   const lastSyncedSignatureRef = useRef('');
   const hydratedConversationIdRef = useRef<string | null>(null);
   const selectedConversationId = searchParams.get('conversationId');
+  const conversationIdRef = useRef<string | null>(selectedConversationId);
+
+  useEffect(() => {
+    conversationIdRef.current = selectedConversationId;
+  }, [selectedConversationId]);
 
   const persistedMessages = useQuery(
     api.chat.listMessages,
@@ -188,7 +194,7 @@ function ConversationChat() {
       fetch: async (input, init) => {
         const body = JSON.parse((init?.body as string) ?? '{}');
         body.workflowMode = workflowModeRef.current;
-        body.conversationId = selectedConversationId ?? undefined;
+        body.conversationId = conversationIdRef.current ?? undefined;
 
         if (workflowModeRef.current) {
           // For workflow mode, use a plain fetch and handle JSON response
@@ -345,6 +351,7 @@ function ConversationChat() {
 
     const result = await createConversation({});
     const nextConversationId = result.conversationId;
+    conversationIdRef.current = nextConversationId;
 
     const params = new URLSearchParams(searchParams.toString());
     params.set('conversationId', nextConversationId);
@@ -354,6 +361,45 @@ function ConversationChat() {
   };
 
   const hasMessages = messages.length > 0;
+
+  const extractWorkflowNodeText = (nodeOutput: string | undefined) => {
+    if (!nodeOutput) return '';
+
+    try {
+      const parsed = JSON.parse(nodeOutput);
+      if (typeof parsed?.text === 'string' && parsed.text.trim()) {
+        return parsed.text.trim();
+      }
+      return JSON.stringify(parsed);
+    } catch {
+      return nodeOutput;
+    }
+  };
+
+  const buildWorkflowCompletionSummary = (nodes: any[]) => {
+    const completedNodes = nodes.filter((n) => n.status === 'completed');
+    if (completedNodes.length === 0) {
+      return 'Workflow completed, but there was no output to summarize.';
+    }
+
+    const lastOutput = extractWorkflowNodeText(completedNodes[completedNodes.length - 1]?.output);
+    if (lastOutput) {
+      return `Workflow completed. ${lastOutput}`;
+    }
+
+    const stepLines = completedNodes
+      .map((node, index) => {
+        const text = extractWorkflowNodeText(node.output);
+        if (!text) return '';
+        return `${index + 1}. ${node.tool}: ${text}`;
+      })
+      .filter(Boolean);
+
+    return stepLines.length > 0
+      ? `Workflow completed:\n${stepLines.join('\n')}`
+      : 'Workflow completed successfully.';
+  };
+
   const getWorkflowSummary = (nodes: any[]) => {
     const total = nodes.length;
     const completed = nodes.filter(n => n.status === 'completed').length;
@@ -364,6 +410,48 @@ function ConversationChat() {
     if (running > 0) return { label: `Running — ${completed}/${total} done`, variant: 'running' as const };
     return { label: 'Starting...', variant: 'pending' as const };
   };
+
+  useEffect(() => {
+    if (!activeWorkflowId || !activeWorkflow) {
+      return;
+    }
+
+    if (activeWorkflow.status === 'completed') {
+      if (postedWorkflowSummaryRef.current === activeWorkflowId) {
+        return;
+      }
+
+      const summary = buildWorkflowCompletionSummary(activeWorkflow.nodes ?? []);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `workflow-summary-${activeWorkflowId}`,
+          role: 'assistant',
+          parts: [{ type: 'text', text: summary }],
+        } as UIMessage,
+      ]);
+      postedWorkflowSummaryRef.current = activeWorkflowId;
+      return;
+    }
+
+    if (activeWorkflow.status === 'failed') {
+      if (postedWorkflowSummaryRef.current === activeWorkflowId) {
+        return;
+      }
+
+      const failedNode = (activeWorkflow.nodes ?? []).find((node: any) => node.status === 'failed');
+      const errorText = failedNode?.error ? ` Error: ${failedNode.error}` : '';
+      setMessages((current) => [
+        ...current,
+        {
+          id: `workflow-summary-${activeWorkflowId}`,
+          role: 'assistant',
+          parts: [{ type: 'text', text: `Workflow failed.${errorText}` }],
+        } as UIMessage,
+      ]);
+      postedWorkflowSummaryRef.current = activeWorkflowId;
+    }
+  }, [activeWorkflow, activeWorkflowId, setMessages]);
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full flex-col px-4 py-4 sm:px-6">
@@ -428,7 +516,7 @@ function ConversationChat() {
                     <CopyIcon className="size-4" />
                   </MessageAction>
 
-                  {/* {isUser && !isEditing && (
+                  {isUser && !isEditing && (
                     <MessageAction
                       label="Edit"
                       onClick={() => startEditingUserMessage(message.id, text)}
@@ -436,7 +524,7 @@ function ConversationChat() {
                     >
                       <PencilIcon className="size-4" />
                     </MessageAction>
-                  )} */}
+                  )}
 
                   <MessageAction
                     label="Delete"
@@ -462,7 +550,7 @@ function ConversationChat() {
       </Conversation>
 
       {activeWorkflowId && activeWorkflow && (
-        <div className="mt-4 rounded-xl border bg-sidebar p-4">
+        <div className="mt-4 w-full min-w-0 rounded-xl border bg-sidebar p-4">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-medium">Workflow execution</p>
             <button
@@ -478,7 +566,7 @@ function ConversationChat() {
             {activeWorkflow.nodes.map((node: any) => (
               <li
                 key={node.nodeId}
-                className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-sm"
+                className="flex min-w-0 flex-col gap-1 rounded-lg border bg-background p-3 text-sm"
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -507,7 +595,7 @@ function ConversationChat() {
                   try {
                     const parsed = JSON.parse(node.output);
                     return (
-                      <pre className="mt-1 max-h-32 overflow-auto rounded bg-muted p-2 text-xs text-muted-foreground">
+                      <pre className="mt-1 w-full max-w-full max-h-32 overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word rounded bg-muted p-2 text-xs text-muted-foreground">
                         {JSON.stringify(parsed, null, 2)}
                       </pre>
                     );
@@ -547,11 +635,11 @@ function ConversationChat() {
       )}
 
       {workflowPlan && (
-        <div className="mt-4 rounded-xl border bg-sidebar p-4">
+        <div className="mt-4 w-full min-w-0 rounded-xl border bg-sidebar p-4">
           <p className="mb-2 text-sm font-medium">Workflow plan</p>
           <ol className="flex flex-col gap-2">
             {workflowPlan.dag?.nodes?.map((node: any) => (
-              <li key={node.id} className="rounded-lg border bg-background p-3 text-sm">
+              <li key={node.id} className="min-w-0 rounded-lg border bg-background p-3 text-sm">
                 <span className="font-mono text-xs text-muted-foreground">{node.id}</span>
                 <span className="mx-2 font-medium">{node.tool}</span>
                 {node.dependsOn?.length > 0 && (
@@ -559,7 +647,7 @@ function ConversationChat() {
                     after: {node.dependsOn.join(', ')}
                   </span>
                 )}
-                <pre className="mt-1 text-xs text-muted-foreground overflow-auto">
+                <pre className="mt-1 w-full max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word text-xs text-muted-foreground">
                   {JSON.stringify(node.params, null, 2)}
                 </pre>
               </li>
