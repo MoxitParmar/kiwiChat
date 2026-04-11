@@ -12,7 +12,10 @@ export async function POST(req: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const { workflowId } = await req.json();
+  const { workflowId, dagOverride } = await req.json() as {
+    workflowId?: string;
+    dagOverride?: unknown;
+  };
   if (!workflowId) {
     return new Response('Missing workflowId', { status: 400 });
   }
@@ -26,6 +29,15 @@ export async function POST(req: Request) {
     return new Response('Workflow not found', { status: 404 });
   }
 
+  if (workflow.userId !== userId) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+
+  let dagJson = workflow.dagJson;
+  if (dagOverride && typeof dagOverride === 'object') {
+    dagJson = JSON.stringify(dagOverride);
+  }
+
   // Approve the workflow in Convex
   await convex.mutation(api.workflows.approveWorkflow, {
     workflowId: workflowId as any,
@@ -34,7 +46,7 @@ export async function POST(req: Request) {
   // Trigger the Trigger.dev task
   await tasks.trigger<typeof executeWorkflow>('execute-workflow', {
     workflowId,
-    dagJson: workflow.dagJson,
+    dagJson,
     userId,
   });
 

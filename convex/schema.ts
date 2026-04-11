@@ -76,5 +76,18 @@ export default defineSchema({
   })
   .index("by_workflow_id_and_node_id", ["workflowId", "nodeId"]),
 
+  savedWorkflows: defineTable({
+    ownerUserId: v.id("users"),
+    sourceWorkflowId: v.optional(v.id("workflows")),
+    name: v.string(),
+    dagJson: v.string(),
+    runCount: v.number(),
+    lastRunAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+  .index("by_owner_user_id_and_updated_at", ["ownerUserId", "updatedAt"])
+  .index("by_owner_user_id_and_name", ["ownerUserId", "name"]),
+
 
 });

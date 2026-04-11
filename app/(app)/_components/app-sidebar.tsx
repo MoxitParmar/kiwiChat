@@ -31,7 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { PlusIcon, MoreVerticalIcon, Trash2Icon } from "lucide-react"
+import { BookmarkIcon, PlusIcon, MoreVerticalIcon, Trash2Icon } from "lucide-react"
 
 type ConversationRecord = {
   _id: string
@@ -103,9 +103,9 @@ function ConversationItem({ conversation, onDeleteConversation }: { conversation
         isActive={activeConversationId === conversation._id}
         className="h-auto min-h-14 w-full items-start justify-start rounded-xl px-3 py-2 text-left"
         onClick={() => {
-          const params = new URLSearchParams(searchParams.toString())
+          const params = new URLSearchParams()
           params.set("conversationId", conversation._id)
-          router.push(`?${params.toString()}`, { scroll: false })
+          router.push(`/dashboard?${params.toString()}`, { scroll: false })
         }}
         type="button"
       >
@@ -167,7 +167,7 @@ export function SidebarWithChatHistory() {
 
   const handleNewChat = async () => {
     const result = await createConversation({})
-    router.push(`${pathname}?conversationId=${result.conversationId}`, { scroll: false })
+    router.push(`/dashboard?conversationId=${result.conversationId}`, { scroll: false })
   }
 
   const handleDeleteConversation = async () => {
@@ -219,6 +219,17 @@ export function SidebarWithChatHistory() {
           >
             <PlusIcon className="size-4" />
             <span>New Chat</span>
+          </Button>
+
+          <Button
+            variant="ghost"
+            className="mb-4 flex w-full items-center justify-start gap-2"
+            onClick={() => router.push('/saved-workflows')}
+            type="button"
+            data-active={pathname.startsWith('/saved-workflows')}
+          >
+            <BookmarkIcon className="size-4" />
+            <span>Saved Workflows</span>
           </Button>
         </div>
 

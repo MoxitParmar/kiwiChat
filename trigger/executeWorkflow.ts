@@ -7,8 +7,9 @@ import { generateText, stepCountIs } from 'ai';
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const NODE_START_STAGGER_MS = 800;
-const NODE_RETRY_ATTEMPTS = 3;
-const NODE_RETRY_DELAY_MS = 4000;
+const NODE_RETRY_ATTEMPTS = 5;
+const NODE_RETRY_BASE_DELAY_MS = 4000;
+const CREDIT_RATE_LIMIT_BASE_DELAY_MS = 30000;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -16,19 +17,135 @@ function sleep(ms: number) {
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage.trim().length > 0) {
+      return maybeMessage;
+    }
+  }
   return String(error ?? 'Unknown error');
 }
 
+function getErrorStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const typed = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    cause?: { status?: unknown; statusCode?: unknown };
+  };
+
+  const values = [typed.status, typed.statusCode, typed.cause?.status, typed.cause?.statusCode];
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function flattenErrorText(error: unknown): string {
+  const parts: string[] = [];
+  const visited = new Set<object>();
+
+  const walk = (value: unknown) => {
+    if (value == null) {
+      return;
+    }
+
+    if (typeof value === 'string') {
+      if (value.trim()) {
+        parts.push(value);
+      }
+      return;
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      parts.push(String(value));
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        walk(item);
+      }
+      return;
+    }
+
+    if (typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (visited.has(obj)) {
+        return;
+      }
+      visited.add(obj);
+
+      walk(obj.message);
+      walk(obj.error);
+      walk(obj.details);
+      walk(obj.cause);
+      walk(obj.body);
+
+      if (!('message' in obj)) {
+        try {
+          const serialized = JSON.stringify(obj);
+          if (serialized && serialized !== '{}') {
+            parts.push(serialized);
+          }
+        } catch {
+          // Ignore serialization failures.
+        }
+      }
+    }
+  };
+
+  walk(error);
+  return parts.join(' | ').toLowerCase();
+}
+
 function isRetryableNodeError(error: unknown) {
-  const message = getErrorMessage(error).toLowerCase();
+  const message = flattenErrorText(error);
+  const statusCode = getErrorStatusCode(error);
   return (
+    statusCode === 408 ||
+    statusCode === 409 ||
+    statusCode === 423 ||
+    statusCode === 425 ||
+    statusCode === 429 ||
+    statusCode === 500 ||
+    statusCode === 502 ||
+    statusCode === 503 ||
+    statusCode === 504 ||
     message.includes('rate limit') ||
     message.includes('temporarily have rate limits') ||
+    message.includes('free credits temporarily have rate limits') ||
     message.includes('429') ||
     message.includes('timeout') ||
+    message.includes('timed out') ||
     message.includes('econnreset') ||
+    message.includes('connection reset') ||
+    message.includes('service unavailable') ||
+    message.includes('try again later') ||
     message.includes('temporarily unavailable')
   );
+}
+
+function isCreditRateLimitError(error: unknown) {
+  const message = flattenErrorText(error);
+  return (
+    message.includes('free credits temporarily have rate limits') ||
+    (message.includes('rate limit') && message.includes('purchase credits'))
+  );
+}
+
+function getRetryDelayMs(error: unknown, attempt: number) {
+  if (isCreditRateLimitError(error)) {
+    return CREDIT_RATE_LIMIT_BASE_DELAY_MS * attempt;
+  }
+
+  return NODE_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
 }
 
 async function runNodeWithRetry(
@@ -46,9 +163,16 @@ async function runNodeWithRetry(
       lastError = error;
       const retryable = isRetryableNodeError(error);
       if (attempt < NODE_RETRY_ATTEMPTS && retryable) {
-        await sleep(NODE_RETRY_DELAY_MS * attempt);
+        await sleep(getRetryDelayMs(error, attempt));
         continue;
       }
+
+      if (retryable) {
+        throw new Error(
+          `Node failed after ${NODE_RETRY_ATTEMPTS} attempts: ${getErrorMessage(error)}`
+        );
+      }
+
       throw error;
     }
   }

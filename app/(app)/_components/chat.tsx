@@ -42,6 +42,7 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -209,12 +210,41 @@ function toUIMessage(message: PersistedMessage): UIMessage {
   };
 }
 
+function dedupePersistedMessages(messages: PersistedMessage[]) {
+  const hasMirrorById = new Map<string, PersistedMessage>();
+  for (const message of messages) {
+    if (message.clientMessageId) {
+      hasMirrorById.set(message.clientMessageId, message);
+    }
+  }
+
+  return messages.filter((message) => {
+    const mirror = hasMirrorById.get(message._id);
+    if (!mirror) {
+      return true;
+    }
+
+    // Legacy duplication pattern: seeded message without clientMessageId, then synced copy pointing to original _id.
+    if (!message.clientMessageId && mirror.role === message.role && mirror.content === message.content) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function isMutatingWorkflowNode(node: { tool?: string; params?: { request?: string } }) {
+  const text = `${node.tool ?? ''} ${node.params?.request ?? ''}`.toLowerCase();
+  return /\b(create|update|delete|send|post|notify|write|publish|push|insert|append)\b/.test(text);
+}
+
 function ConversationChat() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
   const createConversation = useMutation(api.chat.createConversation);
   const syncConversationMessages = useMutation(api.chat.syncConversationMessages);
+  const saveCompletedWorkflow = useMutation(api.workflows.saveCompletedWorkflow);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
@@ -224,6 +254,9 @@ function ConversationChat() {
   const [isWorkflowDialogOpen, setIsWorkflowDialogOpen] = useState(false);
   const [isStoppingWorkflow, setIsStoppingWorkflow] = useState(false);
   const [isToolkitDialogOpen, setIsToolkitDialogOpen] = useState(false);
+  const [isSaveWorkflowDialogOpen, setIsSaveWorkflowDialogOpen] = useState(false);
+  const [workflowBookmarkName, setWorkflowBookmarkName] = useState('');
+  const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
   const [toolkits, setToolkits] = useState<ToolkitListItem[]>([]);
   const [toolkitsError, setToolkitsError] = useState<string | null>(null);
   const [isLoadingToolkits, setIsLoadingToolkits] = useState(false);
@@ -239,11 +272,49 @@ function ConversationChat() {
   const shouldAllowDeleteSyncRef = useRef(false);
   const hydratedConversationIdRef = useRef<string | null>(null);
   const selectedConversationId = searchParams.get('conversationId');
+  const selectedWorkflowId = searchParams.get('workflowId');
+  const latestWorkflowForConversation = useQuery(
+    api.workflows.getWorkflowByConversationId,
+    selectedConversationId
+      ? {
+          conversationId: selectedConversationId as Id<'conversations'>,
+        }
+      : 'skip'
+  );
   const conversationIdRef = useRef<string | null>(selectedConversationId);
 
   useEffect(() => {
     conversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (selectedWorkflowId) {
+      setActiveWorkflowId(selectedWorkflowId);
+    }
+  }, [selectedWorkflowId]);
+
+  useEffect(() => {
+    if (!selectedConversationId || selectedWorkflowId || latestWorkflowForConversation === undefined) {
+      return;
+    }
+
+    if (!latestWorkflowForConversation) {
+      setActiveWorkflowId(null);
+      return;
+    }
+
+    const hasActiveWorkflowStatus =
+      latestWorkflowForConversation.status === 'approved' ||
+      latestWorkflowForConversation.status === 'running' ||
+      latestWorkflowForConversation.status === 'completed' ||
+      latestWorkflowForConversation.status === 'failed';
+
+    setActiveWorkflowId(hasActiveWorkflowStatus ? latestWorkflowForConversation._id : null);
+  }, [
+    latestWorkflowForConversation,
+    selectedConversationId,
+    selectedWorkflowId,
+  ]);
 
   const persistedMessages = useQuery(
     api.chat.listMessages,
@@ -293,10 +364,13 @@ function ConversationChat() {
     setEditingId(null);
     setEditingText('');
     setWorkflowPlan(null);
-    setActiveWorkflowId(null);
+    setActiveWorkflowId(selectedWorkflowId ?? null);
     setIsWorkflowDialogOpen(false);
     setIsStoppingWorkflow(false);
     setIsToolkitDialogOpen(false);
+    setIsSaveWorkflowDialogOpen(false);
+    setWorkflowBookmarkName('');
+    setIsSavingWorkflow(false);
     setToolkits([]);
     setToolkitsError(null);
     setIsLoadingToolkits(false);
@@ -306,10 +380,10 @@ function ConversationChat() {
     postedWorkflowSummaryRef.current = null;
     lastSyncedSignatureRef.current = '';
     shouldAllowDeleteSyncRef.current = false;
-  }, [selectedConversationId]);
+  }, [selectedConversationId, selectedWorkflowId]);
 
   const persistedUiMessages = useMemo(
-    () => (persistedMessages ?? []).map(message => toUIMessage(message)),
+    () => dedupePersistedMessages(persistedMessages ?? []).map(message => toUIMessage(message)),
     [persistedMessages]
   );
 
@@ -519,11 +593,11 @@ function ConversationChat() {
       if (payload.redirectUrl) {
         window.open(payload.redirectUrl, '_blank', 'noopener,noreferrer');
       } else if (payload.message) {
-        alert(payload.message);
+        toast.info(payload.message);
       }
     } catch (error) {
       console.error(error);
-      alert(error instanceof Error ? error.message : 'Unable to start toolkit connection. Please try again.');
+      toast.error(error instanceof Error ? error.message : 'Unable to start toolkit connection. Please try again.');
     } finally {
       setConnectingToolkitSlug(null);
       await fetchToolkitData();
@@ -557,7 +631,7 @@ function ConversationChat() {
       }
     } catch (error) {
       console.error(error);
-      alert(error instanceof Error ? error.message : 'Unable to disconnect toolkit. Please try again.');
+      toast.error(error instanceof Error ? error.message : 'Unable to disconnect toolkit. Please try again.');
     } finally {
       setDisconnectingToolkitId(null);
       await fetchToolkitData();
@@ -739,22 +813,76 @@ function ConversationChat() {
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to stop workflow. Check console.');
+      toast.error('Failed to stop workflow. Check console.');
     } finally {
       setIsStoppingWorkflow(false);
     }
   };
 
-  useEffect(() => {
-    if (workflowPlan || activeWorkflowId) {
-      setIsWorkflowDialogOpen(true);
+  const updateWorkflowPlanNodeRequest = (nodeId: string, request: string) => {
+    setWorkflowPlan((current) => {
+      if (!current?.dag?.nodes) {
+        return current;
+      }
+
+      const nextNodes = current.dag.nodes.map((node: any) => {
+        if (node.id !== nodeId) {
+          return node;
+        }
+
+        return {
+          ...node,
+          params: {
+            ...(node.params ?? {}),
+            request,
+          },
+        };
+      });
+
+      return {
+        ...current,
+        dag: {
+          ...current.dag,
+          nodes: nextNodes,
+        },
+      };
+    });
+  };
+
+  const handleSaveCompletedWorkflow = async () => {
+    if (!activeWorkflowId || isSavingWorkflow) {
+      return;
     }
-  }, [workflowPlan, activeWorkflowId]);
+
+    const name = workflowBookmarkName.trim();
+    if (!name) {
+      toast.error('Please provide a workflow name.');
+      return;
+    }
+
+    setIsSavingWorkflow(true);
+    try {
+      await saveCompletedWorkflow({
+        workflowId: activeWorkflowId as any,
+        name,
+      });
+      setIsSaveWorkflowDialogOpen(false);
+      setWorkflowBookmarkName('');
+      toast.success('Workflow bookmarked successfully.');
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : 'Failed to bookmark workflow.');
+    } finally {
+      setIsSavingWorkflow(false);
+    }
+  };
 
   useEffect(() => {
     if (!activeWorkflowId || !activeWorkflow) {
       return;
     }
+
+    const summaryMessageId = `workflow-summary-${activeWorkflowId}`;
 
     if (activeWorkflow.status === 'completed') {
       if (postedWorkflowSummaryRef.current === activeWorkflowId) {
@@ -762,14 +890,20 @@ function ConversationChat() {
       }
 
       const summary = buildWorkflowCompletionSummary(activeWorkflow.nodes ?? []);
-      setMessages((current) => [
-        ...current,
-        {
-          id: `workflow-summary-${activeWorkflowId}`,
-          role: 'assistant',
-          parts: [{ type: 'text', text: summary }],
-        } as UIMessage,
-      ]);
+      setMessages((current) => {
+        if (current.some((message) => message.id === summaryMessageId)) {
+          return current;
+        }
+
+        return [
+          ...current,
+          {
+            id: summaryMessageId,
+            role: 'assistant',
+            parts: [{ type: 'text', text: summary }],
+          } as UIMessage,
+        ];
+      });
       postedWorkflowSummaryRef.current = activeWorkflowId;
       return;
     }
@@ -782,14 +916,20 @@ function ConversationChat() {
       const failedNode = (activeWorkflow.nodes ?? []).find((node: any) => node.status === 'failed');
       const isStoppedByUser = typeof failedNode?.error === 'string' && failedNode.error.includes('Stopped by user');
       const errorText = failedNode?.error ? ` Error: ${failedNode.error}` : '';
-      setMessages((current) => [
-        ...current,
-        {
-          id: `workflow-summary-${activeWorkflowId}`,
-          role: 'assistant',
-          parts: [{ type: 'text', text: isStoppedByUser ? 'Workflow stopped.' : `Workflow failed.${errorText}` }],
-        } as UIMessage,
-      ]);
+      setMessages((current) => {
+        if (current.some((message) => message.id === summaryMessageId)) {
+          return current;
+        }
+
+        return [
+          ...current,
+          {
+            id: summaryMessageId,
+            role: 'assistant',
+            parts: [{ type: 'text', text: isStoppedByUser ? 'Workflow stopped.' : `Workflow failed.${errorText}` }],
+          } as UIMessage,
+        ];
+      });
       postedWorkflowSummaryRef.current = activeWorkflowId;
     }
   }, [activeWorkflow, activeWorkflowId, setMessages]);
@@ -805,13 +945,17 @@ function ConversationChat() {
             />
           )}
 
-          {messages.map(message => {
+          {messages.map((message, index) => {
             const text = getMessageText(message.parts);
             const isUser = message.role === 'user';
             const isEditing = editingMessage?.id === message.id && isUser;
+            const duplicateIndex = messages
+              .slice(0, index)
+              .reduce((count, current) => count + (current.id === message.id ? 1 : 0), 0);
+            const messageRenderKey = duplicateIndex === 0 ? message.id : `${message.id}-${duplicateIndex}`;
 
             return (
-              <Message from={message.role} key={message.id}>
+              <Message from={message.role} key={messageRenderKey}>
                 <MessageContent>
                   {isEditing ? (
                     <div className="flex w-full flex-col gap-2">
@@ -983,6 +1127,18 @@ function ConversationChat() {
                             after: {node.dependsOn.join(', ')}
                           </span>
                         )}
+                        {isMutatingWorkflowNode(node) && (
+                          <div className="mt-2">
+                            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Requires human approval before execution
+                            </p>
+                            <textarea
+                              className="min-h-20 w-full rounded-md border bg-background p-2 text-xs"
+                              value={typeof node.params?.request === 'string' ? node.params.request : ''}
+                              onChange={(event) => updateWorkflowPlanNodeRequest(node.id, event.currentTarget.value)}
+                            />
+                          </div>
+                        )}
                         <pre className="mt-1 w-full max-w-full overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">
                           {JSON.stringify(node.params, null, 2)}
                         </pre>
@@ -995,14 +1151,28 @@ function ConversationChat() {
 
             <DialogFooter className="mt-4 shrink-0 justify-between border-t bg-background pt-4 sm:justify-between">
               {activeWorkflowId && activeWorkflow && (
-                <button
-                  type="button"
-                  className="rounded-md border border-red-300 px-4 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
-                  onClick={() => void stopWorkflowExecution()}
-                  disabled={isStoppingWorkflow || activeWorkflow.status !== 'running'}
-                >
-                  {isStoppingWorkflow ? 'Stopping...' : 'Stop workflow'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-red-300 px-4 py-1.5 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+                    onClick={() => void stopWorkflowExecution()}
+                    disabled={isStoppingWorkflow || activeWorkflow.status !== 'running'}
+                  >
+                    {isStoppingWorkflow ? 'Stopping...' : 'Stop workflow'}
+                  </button>
+                  {activeWorkflow.status === 'completed' && (
+                    <button
+                      type="button"
+                      className="rounded-md border px-4 py-1.5 text-sm"
+                      onClick={() => {
+                        setWorkflowBookmarkName('');
+                        setIsSaveWorkflowDialogOpen(true);
+                      }}
+                    >
+                      Bookmark workflow
+                    </button>
+                  )}
+                </div>
               )}
 
               <div className="flex gap-2">
@@ -1017,14 +1187,17 @@ function ConversationChat() {
                           const res = await fetch('/api/workflow/execute', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ workflowId: workflowPlan.workflowId }),
+                            body: JSON.stringify({
+                              workflowId: workflowPlan.workflowId,
+                              dagOverride: workflowPlan.dag,
+                            }),
                           });
                           if (!res.ok) throw new Error('Failed to start workflow');
                           setActiveWorkflowId(workflowPlan.workflowId);
                           setWorkflowPlan(null);
                         } catch (err) {
                           console.error(err);
-                          alert('Failed to start workflow. Check console.');
+                          toast.error('Failed to start workflow. Check console.');
                         }
                       }}
                     >
@@ -1043,6 +1216,44 @@ function ConversationChat() {
               </div>
             </DialogFooter>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isSaveWorkflowDialogOpen} onOpenChange={setIsSaveWorkflowDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bookmark workflow</DialogTitle>
+            <DialogDescription>
+              Save this completed workflow so you can run it again from Saved Workflows.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Workflow name</label>
+            <input
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              value={workflowBookmarkName}
+              onChange={(event) => setWorkflowBookmarkName(event.target.value)}
+              placeholder="e.g. Weekly issue sync"
+            />
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              className="rounded-md border px-4 py-1.5 text-sm"
+              onClick={() => setIsSaveWorkflowDialogOpen(false)}
+              disabled={isSavingWorkflow}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+              onClick={() => void handleSaveCompletedWorkflow()}
+              disabled={isSavingWorkflow}
+            >
+              {isSavingWorkflow ? 'Saving...' : 'Save workflow'}
+            </button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

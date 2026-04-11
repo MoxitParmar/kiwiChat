@@ -1,5 +1,69 @@
-import { mutation, query } from './_generated/server';
+import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server';
 import { v } from 'convex/values';
+import type { Doc, Id } from './_generated/dataModel';
+import { getCurrentUser } from './lib/auth';
+
+const DEFAULT_LIST_LIMIT = 50;
+
+function parseDag(dagJson: string) {
+  const parsed = JSON.parse(dagJson) as { nodes?: Array<{ id: string; tool: string }> };
+  if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
+    throw new Error('Workflow DAG has no nodes');
+  }
+  return parsed;
+}
+
+async function insertWorkflowWithNodes(
+  ctx: MutationCtx,
+  args: {
+    conversationId: Id<'conversations'>;
+    userId: string;
+    dagJson: string;
+  }
+) {
+  const now = Date.now();
+  const workflowId = await ctx.db.insert('workflows', {
+    conversationId: args.conversationId,
+    userId: args.userId,
+    status: 'pending_approval',
+    dagJson: args.dagJson,
+    createdAt: now,
+  });
+
+  const dag = parseDag(args.dagJson);
+  for (const node of dag.nodes ?? []) {
+    await ctx.db.insert('workflowNodes', {
+      workflowId,
+      nodeId: node.id,
+      tool: node.tool,
+      status: 'pending',
+    });
+  }
+
+  return workflowId;
+}
+
+async function getOwnedWorkflow(
+  ctx: QueryCtx | MutationCtx,
+  workflowId: Id<'workflows'>
+) {
+  const { userId, clerkUserId } = await getCurrentUser(ctx);
+  const workflow = await ctx.db.get(workflowId);
+  if (!workflow) {
+    throw new Error('Workflow not found');
+  }
+
+  const conversation = await ctx.db.get(workflow.conversationId);
+  if (!conversation || conversation.ownerUserId !== userId) {
+    throw new Error('Unauthorized');
+  }
+
+  if (workflow.userId !== clerkUserId) {
+    throw new Error('Unauthorized');
+  }
+
+  return { workflow, userId, clerkUserId };
+}
 
 // createWorkflow — inserts workflow row + one workflowNode row per node in dagJson
 export const createWorkflow = mutation({
@@ -9,26 +73,25 @@ export const createWorkflow = mutation({
     dagJson: v.string(),
   },
   handler: async (ctx, args) => {
-    const now = Date.now();
-    const workflowId = await ctx.db.insert('workflows', {
-      conversationId: args.conversationId,
-      userId: args.userId,
-      status: 'pending_approval',
+    return insertWorkflowWithNodes(ctx, args);
+  },
+});
+
+export const updateWorkflowDag = mutation({
+  args: {
+    workflowId: v.id('workflows'),
+    dagJson: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { workflow } = await getOwnedWorkflow(ctx, args.workflowId);
+    parseDag(args.dagJson);
+
+    await ctx.db.patch(args.workflowId, {
       dagJson: args.dagJson,
-      createdAt: now,
+      status: workflow.status === 'pending_approval' ? 'pending_approval' : workflow.status,
     });
 
-    const dag = JSON.parse(args.dagJson);
-    for (const node of dag.nodes) {
-      await ctx.db.insert('workflowNodes', {
-        workflowId,
-        nodeId: node.id,
-        tool: node.tool,
-        status: 'pending',
-      });
-    }
-
-    return workflowId;
+    return { success: true };
   },
 });
 
@@ -108,6 +171,106 @@ export const getWorkflow = query({
       )
       .collect();
     return { ...workflow, nodes };
+  },
+});
+
+export const saveCompletedWorkflow = mutation({
+  args: {
+    workflowId: v.id('workflows'),
+    name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const { workflow, userId } = await getOwnedWorkflow(ctx, args.workflowId);
+    const name = args.name.trim();
+    if (!name) {
+      throw new Error('Workflow name is required');
+    }
+
+    if (workflow.status !== 'completed') {
+      throw new Error('Only completed workflows can be saved');
+    }
+
+    const now = Date.now();
+    const savedWorkflowId = await ctx.db.insert('savedWorkflows', {
+      ownerUserId: userId,
+      sourceWorkflowId: workflow._id,
+      name,
+      dagJson: workflow.dagJson,
+      runCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { savedWorkflowId };
+  },
+});
+
+export const listSavedWorkflows = query({
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await getCurrentUser(ctx);
+    const limit = Math.min(args.limit ?? DEFAULT_LIST_LIMIT, 100);
+
+    const workflows = await ctx.db
+      .query('savedWorkflows')
+      .withIndex('by_owner_user_id_and_updated_at', (q) =>
+        q.eq('ownerUserId', userId)
+      )
+      .order('desc')
+      .take(limit);
+
+    return workflows;
+  },
+});
+
+export const deleteSavedWorkflow = mutation({
+  args: {
+    savedWorkflowId: v.id('savedWorkflows'),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await getCurrentUser(ctx);
+    const savedWorkflow = await ctx.db.get(args.savedWorkflowId);
+    if (!savedWorkflow || savedWorkflow.ownerUserId !== userId) {
+      throw new Error('Saved workflow not found');
+    }
+
+    await ctx.db.delete(args.savedWorkflowId);
+    return { success: true };
+  },
+});
+
+export const createWorkflowFromSaved = mutation({
+  args: {
+    savedWorkflowId: v.id('savedWorkflows'),
+    conversationId: v.id('conversations'),
+  },
+  handler: async (ctx, args) => {
+    const { userId, clerkUserId } = await getCurrentUser(ctx);
+    const savedWorkflow = await ctx.db.get(args.savedWorkflowId);
+    if (!savedWorkflow || savedWorkflow.ownerUserId !== userId) {
+      throw new Error('Saved workflow not found');
+    }
+
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation || conversation.ownerUserId !== userId) {
+      throw new Error('Conversation not found');
+    }
+
+    const workflowId = await insertWorkflowWithNodes(ctx, {
+      conversationId: args.conversationId,
+      dagJson: savedWorkflow.dagJson,
+      userId: clerkUserId,
+    });
+
+    await ctx.db.patch(args.savedWorkflowId, {
+      runCount: savedWorkflow.runCount + 1,
+      lastRunAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    return { workflowId };
   },
 });
 

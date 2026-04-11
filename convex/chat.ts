@@ -208,6 +208,11 @@ export const createConversation = mutation({
         updatedAt: now,
       });
 
+      // Normalize seeded first messages so subsequent sync operations can match by clientMessageId.
+      await ctx.db.patch(messageId, {
+        clientMessageId: messageId,
+      });
+
       await ctx.db.patch(conversationId, {
         lastMessagePreview: preview,
         lastMessageAt: now,
@@ -305,17 +310,19 @@ export const syncConversationMessages = mutation({
       )
       .take(500);
 
-    const existingByClientMessageId = new Map(
-      existingMessages
-        .filter((message) => message.clientMessageId)
-        .map((message) => [message.clientMessageId as string, message])
-    );
+    const existingBySyncId = new Map<string, (typeof existingMessages)[number]>();
+    for (const existingMessage of existingMessages) {
+      existingBySyncId.set(existingMessage._id, existingMessage);
+      if (existingMessage.clientMessageId) {
+        existingBySyncId.set(existingMessage.clientMessageId, existingMessage);
+      }
+    }
     const incomingClientMessageIds = new Set(
       normalizedMessages.map((message) => message.clientMessageId)
     );
 
     const hasIdOverlap = normalizedMessages.some((message) =>
-      existingByClientMessageId.has(message.clientMessageId)
+      existingBySyncId.has(message.clientMessageId)
     );
 
     if (args.allowDeletes && hasIdOverlap) {
@@ -336,15 +343,20 @@ export const syncConversationMessages = mutation({
         firstUserMessage = message.content;
       }
 
-      const existingMessage = existingByClientMessageId.get(message.clientMessageId);
+      const existingMessage = existingBySyncId.get(message.clientMessageId);
       const createdAt = now + index;
 
       if (existingMessage) {
         const patch: {
+          clientMessageId?: string;
           role?: "user" | "assistant" | "system";
           content?: string;
           updatedAt?: number;
         } = {};
+
+        if (existingMessage.clientMessageId !== message.clientMessageId) {
+          patch.clientMessageId = message.clientMessageId;
+        }
 
         if (existingMessage.role !== message.role) {
           patch.role = message.role;
