@@ -25,6 +25,20 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
 } from '@/components/ai-elements/prompt-input';
+import {
+  Tool,
+  ToolHeader,
+  ToolContent,
+  ToolInput,
+  ToolOutput,
+  type ToolPart,
+} from '@/components/ai-elements/tool';
+import {
+  Reasoning,
+  ReasoningTrigger,
+  ReasoningContent,
+} from '@/components/ai-elements/reasoning';
+import { Shimmer } from '@/components/ai-elements/shimmer';
 import { CopyIcon, PencilIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -53,6 +67,71 @@ function getMessageText(parts: readonly unknown[]) {
     })
     .map(part => part.text)
     .join('');
+}
+
+function renderMessageParts(parts: readonly unknown[]) {
+  return parts.map((part, index) => {
+    if (!part || typeof part !== 'object') {
+      return null;
+    }
+
+    const typedPart = part as any;
+
+    switch (typedPart.type) {
+      case 'text':
+        return (
+          <MessageResponse key={`text-${index}`}>
+            {typedPart.text}
+          </MessageResponse>
+        );
+
+      case 'thinking':
+      case 'reasoning':
+        return (
+          <Reasoning key={`reasoning-${index}`} defaultOpen={false}>
+            <ReasoningTrigger />
+            <ReasoningContent>{typedPart.content || ''}</ReasoningContent>
+          </Reasoning>
+        );
+
+      case 'tool-call':
+      case 'tool-result':
+      case 'dynamic-tool':
+        const toolPart = typedPart as ToolPart;
+        const isDynamicTool = toolPart.type === 'dynamic-tool';
+        
+        return (
+          <Tool key={`tool-${index}`} className="scale-90 origin-top-left">
+            {isDynamicTool ? (
+              <ToolHeader
+                type={toolPart.type as 'dynamic-tool'}
+                state={toolPart.state}
+                toolName={toolPart.toolName}
+              />
+            ) : (
+              <ToolHeader
+                type={toolPart.type}
+                state={toolPart.state}
+              />
+            )}
+            <ToolContent>
+              {(toolPart as any).input && (
+                <ToolInput input={(toolPart as any).input} />
+              )}
+              {((toolPart as any).output || (toolPart as any).errorText) && (
+                <ToolOutput
+                  output={(toolPart as any).output}
+                  errorText={(toolPart as any).errorText || ''}
+                />
+              )}
+            </ToolContent>
+          </Tool>
+        );
+
+      default:
+        return null;
+    }
+  });
 }
 
 function getMessageSignature(messages: UIMessage[]) {
@@ -282,7 +361,9 @@ function ConversationChat() {
                       </div>
                     </div>
                   ) : (
-                    <MessageResponse>{text}</MessageResponse>
+                    <div className="flex w-full flex-col gap-4">
+                      {renderMessageParts(message.parts)}
+                    </div>
                   )}
                 </MessageContent>
 
@@ -299,7 +380,7 @@ function ConversationChat() {
                     <CopyIcon className="size-4" />
                   </MessageAction>
 
-                  {isUser && !isEditing && (
+                  {/* {isUser && !isEditing && (
                     <MessageAction
                       label="Edit"
                       onClick={() => startEditingUserMessage(message.id, text)}
@@ -307,7 +388,7 @@ function ConversationChat() {
                     >
                       <PencilIcon className="size-4" />
                     </MessageAction>
-                  )}
+                  )} */}
 
                   <MessageAction
                     label="Delete"
@@ -320,6 +401,14 @@ function ConversationChat() {
               </Message>
             )
           })}
+
+          {(status === 'streaming' || status === 'submitted') && (
+            <Message from="assistant">
+              <MessageContent>
+                <Shimmer>Thinking...</Shimmer>
+              </MessageContent>
+            </Message>
+          )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
