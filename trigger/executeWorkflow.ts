@@ -116,7 +116,7 @@ async function runNodeRequest(
 
   const nodePrompt = `${requestText}${context}`;
   const result = await generateText({
-    model: "xai/grok-4.1-fast-non-reasoning" as any,
+    model: "xai/grok-4.1-fast-non-reasoning" ,
     system:
       'You are executing one automation step. Use tools whenever the request needs external data or side effects (e.g., GitHub fetch, Slack message). Always finish with a concise final text that states what was done and key result details.',
     prompt: nodePrompt,

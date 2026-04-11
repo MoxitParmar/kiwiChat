@@ -63,7 +63,7 @@ Rules you MUST follow:
 - Only include nodes that directly accomplish the user's stated goal.`;
 
   const { text } = await generateText({
-    model: "xai/grok-4.1-fast-non-reasoning" as any,
+    model: "xai/grok-4.1-fast-non-reasoning" ,
     system: systemPrompt,
     prompt: userMessage,
   });
@@ -73,7 +73,7 @@ Rules you MUST follow:
 
   if (hasInvalidNode) {
     const retry = await generateText({
-      model: "xai/grok-4.1-fast-non-reasoning" as any,
+      model: "xai/grok-4.1-fast-non-reasoning" ,
       system: systemPrompt,
       prompt: `${userMessage}\n\nYour last DAG was invalid. Regenerate with nodes that all include: id, tool, params.request, dependsOn.`,
     });
