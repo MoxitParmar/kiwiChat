@@ -324,9 +324,9 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 const streamdownPlugins = { cjk, code, math, mermaid };
 const streamdownComponents = {
   p: ({ children, ...props }: any) => (
-    <p {...props} suppressHydrationWarning>
+    <div {...props} suppressHydrationWarning>
       {children}
-    </p>
+    </div>
   ),
   img: ({ src, alt, ...props }: any) => (
     <img src={src} alt={alt} {...props} suppressHydrationWarning />

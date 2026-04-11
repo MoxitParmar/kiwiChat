@@ -14,6 +14,7 @@ import type * as lib_auth from "../lib/auth.js";
 import type * as users_mutations from "../users/mutations.js";
 import type * as users_queries from "../users/queries.js";
 import type * as webhooks_clerk from "../webhooks/clerk.js";
+import type * as workflows from "../workflows.js";
 
 import type {
   ApiFromModules,
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   "users/mutations": typeof users_mutations;
   "users/queries": typeof users_queries;
   "webhooks/clerk": typeof webhooks_clerk;
+  workflows: typeof workflows;
 }>;
 
 /**

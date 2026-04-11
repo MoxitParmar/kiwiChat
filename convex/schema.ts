@@ -44,4 +44,37 @@ export default defineSchema({
     "clientMessageId",
   ]),
 
+    workflows: defineTable({
+    conversationId: v.id("conversations"),
+    userId: v.string(),
+    status: v.union(
+      v.literal("pending_approval"),
+      v.literal("approved"),
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("failed")
+    ),
+    dagJson: v.string(),
+    createdAt: v.number(),
+  })
+  .index("by_conversation_id_and_created_at", ["conversationId", "createdAt"]),
+
+  workflowNodes: defineTable({
+    workflowId: v.id("workflows"),
+    nodeId: v.string(),
+    tool: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("failed")
+    ),
+    output: v.optional(v.string()),
+    error: v.optional(v.string()),
+    startedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+  })
+  .index("by_workflow_id_and_node_id", ["workflowId", "nodeId"]),
+
+
 });

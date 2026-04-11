@@ -1,7 +1,7 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { type UIMessage } from 'ai';
+import { DefaultChatTransport, type UIMessage } from 'ai';
 import { useMutation, useQuery } from 'convex/react';
 import type { Id } from '@/convex/_generated/dataModel';
 import { api } from '@/convex/_generated/api';
@@ -161,6 +161,13 @@ function ConversationChat() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [workflowMode, setWorkflowMode] = useState(false);
+  const [workflowPlan, setWorkflowPlan] = useState<{ dag: any; workflowId: string | null } | null>(null);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const activeWorkflow = useQuery(
+    api.workflows.getWorkflow,
+    activeWorkflowId ? { workflowId: activeWorkflowId as any } : 'skip'
+  );
   const lastSyncedSignatureRef = useRef('');
   const hydratedConversationIdRef = useRef<string | null>(null);
   const selectedConversationId = searchParams.get('conversationId');
@@ -175,7 +182,38 @@ function ConversationChat() {
       : 'skip'
   );
 
-  const { messages, sendMessage, setMessages, status, stop } = useChat();
+  const workflowModeRef = useRef(false);
+  const { messages, sendMessage, setMessages, status, stop } = useChat({
+    transport: new DefaultChatTransport({
+      fetch: async (input, init) => {
+        const body = JSON.parse((init?.body as string) ?? '{}');
+        body.workflowMode = workflowModeRef.current;
+        body.conversationId = selectedConversationId ?? undefined;
+
+        if (workflowModeRef.current) {
+          // For workflow mode, use a plain fetch and handle JSON response
+          const res = await fetch(input, {
+            ...init,
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) return res;
+          const data = await res.json();
+          if (data.type === 'workflow-plan') {
+            setWorkflowPlan({ dag: data.dag, workflowId: data.workflowId });
+          }
+          // Return a fake empty stream response so useChat doesn't error
+          return new Response(
+            new ReadableStream({ start(c) { c.close(); } }),
+            { headers: { 'Content-Type': 'text/event-stream' } }
+          );
+        }
+
+        return fetch(input, { ...init, body: JSON.stringify(body) });
+      },
+    }),
+  });
+
+  useEffect(() => { workflowModeRef.current = workflowMode; }, [workflowMode]);
 
   useEffect(() => {
     hydratedConversationIdRef.current = null;
@@ -316,6 +354,16 @@ function ConversationChat() {
   };
 
   const hasMessages = messages.length > 0;
+  const getWorkflowSummary = (nodes: any[]) => {
+    const total = nodes.length;
+    const completed = nodes.filter(n => n.status === 'completed').length;
+    const failed = nodes.filter(n => n.status === 'failed').length;
+    const running = nodes.filter(n => n.status === 'running').length;
+    if (failed > 0) return { label: 'Workflow failed', variant: 'failed' as const };
+    if (completed === total) return { label: 'Workflow complete', variant: 'complete' as const };
+    if (running > 0) return { label: `Running — ${completed}/${total} done`, variant: 'running' as const };
+    return { label: 'Starting...', variant: 'pending' as const };
+  };
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-4rem)] w-full flex-col px-4 py-4 sm:px-6">
@@ -413,6 +461,145 @@ function ConversationChat() {
         <ConversationScrollButton />
       </Conversation>
 
+      {activeWorkflowId && activeWorkflow && (
+        <div className="mt-4 rounded-xl border bg-sidebar p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-medium">Workflow execution</p>
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setActiveWorkflowId(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+
+          <ol className="flex flex-col gap-2">
+            {activeWorkflow.nodes.map((node: any) => (
+              <li
+                key={node.nodeId}
+                className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-sm"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-mono text-xs text-muted-foreground shrink-0">
+                      {node.nodeId}
+                    </span>
+                    <span className="font-medium truncate">{node.tool}</span>
+                  </div>
+
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                      node.status === 'completed'
+                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                        : node.status === 'failed'
+                        ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                        : node.status === 'running'
+                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                        : 'bg-muted text-muted-foreground'
+                    }`}
+                  >
+                    {node.status === 'running' ? 'Running...' : node.status}
+                  </span>
+                </div>
+
+                {node.status === 'completed' && node.output && (() => {
+                  try {
+                    const parsed = JSON.parse(node.output);
+                    return (
+                      <pre className="mt-1 max-h-32 overflow-auto rounded bg-muted p-2 text-xs text-muted-foreground">
+                        {JSON.stringify(parsed, null, 2)}
+                      </pre>
+                    );
+                  } catch {
+                    return (
+                      <p className="mt-1 text-xs text-muted-foreground">{node.output}</p>
+                    );
+                  }
+                })()}
+
+                {node.status === 'failed' && node.error && (
+                  <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                    {node.error}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+
+          {(() => {
+            const summary = getWorkflowSummary(activeWorkflow.nodes);
+            return (
+              <div
+                className={`mt-3 rounded-lg px-3 py-2 text-sm font-medium ${
+                  summary.variant === 'complete'
+                    ? 'bg-green-50 text-green-800 dark:bg-green-950 dark:text-green-200'
+                    : summary.variant === 'failed'
+                    ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
+                    : 'bg-muted text-muted-foreground'
+                }`}
+              >
+                {summary.label}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {workflowPlan && (
+        <div className="mt-4 rounded-xl border bg-sidebar p-4">
+          <p className="mb-2 text-sm font-medium">Workflow plan</p>
+          <ol className="flex flex-col gap-2">
+            {workflowPlan.dag?.nodes?.map((node: any) => (
+              <li key={node.id} className="rounded-lg border bg-background p-3 text-sm">
+                <span className="font-mono text-xs text-muted-foreground">{node.id}</span>
+                <span className="mx-2 font-medium">{node.tool}</span>
+                {node.dependsOn?.length > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    after: {node.dependsOn.join(', ')}
+                  </span>
+                )}
+                <pre className="mt-1 text-xs text-muted-foreground overflow-auto">
+                  {JSON.stringify(node.params, null, 2)}
+                </pre>
+              </li>
+            ))}
+          </ol>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground"
+              onClick={async () => {
+                if (!workflowPlan?.workflowId) return;
+                try {
+                  const res = await fetch('/api/workflow/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ workflowId: workflowPlan.workflowId }),
+                  });
+                  if (!res.ok) throw new Error('Failed to start workflow');
+                  setActiveWorkflowId(workflowPlan.workflowId);
+                  setWorkflowPlan(null);
+                  // Phase 5 will show the live progress card here
+                } catch (err) {
+                  console.error(err);
+                  alert('Failed to start workflow. Check console.');
+                }
+              }}
+            >
+              Approve and run
+            </button>
+            <button
+              type="button"
+              className="rounded-md border px-4 py-1.5 text-sm"
+              onClick={() => setWorkflowPlan(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="sticky bottom-0 mt-4 bg-background/95 pb-2 pt-2 backdrop-blur supports-backdrop-filter:bg-background/80">
         <PromptInput
           onSubmit={async ({ text }, event) => {
@@ -427,10 +614,27 @@ function ConversationChat() {
           }}
         >
           <PromptInputBody>
-            <PromptInputTextarea placeholder="Type your message..." />
+            <PromptInputTextarea
+              placeholder={workflowMode
+                ? "Describe your workflow... e.g. Get my GitHub repos and send a summary to Slack"
+                : "Type your message..."
+              }
+            />
           </PromptInputBody>
           <PromptInputFooter>
-            <div />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setWorkflowMode(prev => !prev)}
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                  workflowMode
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                Workflow
+              </button>
+            </div>
             <PromptInputSubmit onStop={stop} status={status} />
           </PromptInputFooter>
         </PromptInput>
