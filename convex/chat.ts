@@ -108,6 +108,11 @@ export const listConversations = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return [];
+    }
+    
     const { userId } = await getCurrentUser(ctx);
     const limit = Math.min(args.limit ?? DEFAULT_CONVERSATION_LIMIT, 100);
 
@@ -139,7 +144,18 @@ export const listMessages = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await getOwnedConversation(ctx, args.conversationId);
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return [];
+    }
+    
+    try {
+      await getOwnedConversation(ctx, args.conversationId);
+    } catch {
+      // Conversation was deleted or doesn't belong to user, return empty
+      return [];
+    }
+    
     const limit = Math.min(args.limit ?? DEFAULT_MESSAGE_LIMIT, 500);
 
     const messages = await ctx.db
