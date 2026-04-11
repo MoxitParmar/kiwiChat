@@ -8,6 +8,12 @@ import { runPlanner } from '@/lib/ai/planner';
 
 const composioApiKey = process.env.COMPOSIO_API_KEY;
 const CHAT_MODEL = 'xai/grok-4.1-fast-non-reasoning';
+const CONNECT_MARKER_INSTRUCTION = [
+  'If the user explicitly asks to connect/integrate an app or toolkit, include exactly one line in your response in this format:',
+  'CONNECT_TOOLKIT:<toolkit-slug>',
+  'Use lowercase slug form (example: linear, github, google-sheets).',
+  'Do not include this marker for non-connection requests.',
+].join(' ');
 
 type ChatRequestBody = {
   messages: UIMessage[];
@@ -70,6 +76,7 @@ export async function POST(req: Request) {
   const result = streamText({
     model: CHAT_MODEL,
     messages: await convertToModelMessages(messages),
+    system: CONNECT_MARKER_INSTRUCTION,
     stopWhen: stepCountIs(10),
     tools,
   });

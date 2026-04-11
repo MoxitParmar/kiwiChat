@@ -39,7 +39,7 @@ import {
   ReasoningContent,
 } from '@/components/ai-elements/reasoning';
 import { Shimmer } from '@/components/ai-elements/shimmer';
-import { CopyIcon, PencilIcon, Trash2Icon } from 'lucide-react';
+import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -63,6 +63,37 @@ type PersistedMessage = {
   content: string;
 };
 
+type ToolkitListItem = {
+  slug: string;
+  name: string;
+  logo: string;
+  isConnected: boolean;
+  connectionStatus: string | null;
+  connectedAccountId: string | null;
+};
+
+const CONNECT_TOOLKIT_MARKER = /CONNECT_TOOLKIT:([a-z0-9-]+)/i;
+
+function extractToolkitSlugFromText(text: string) {
+  const match = text.match(CONNECT_TOOLKIT_MARKER);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+function stripConnectMarkerFromText(text: string) {
+  return text
+    .split('\n')
+    .filter((line) => !CONNECT_TOOLKIT_MARKER.test(line))
+    .join('\n')
+    .trim();
+}
+
+function formatToolkitName(slug: string) {
+  return slug
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 function getMessageText(parts: readonly unknown[]) {
   return parts
     .filter((part): part is TextPart => {
@@ -77,7 +108,10 @@ function getMessageText(parts: readonly unknown[]) {
     .join('');
 }
 
-function renderMessageParts(parts: readonly unknown[]) {
+function renderMessageParts(
+  parts: readonly unknown[],
+  onConnectToolkit?: (slug: string) => void
+) {
   return parts.map((part, index) => {
     if (!part || typeof part !== 'object') {
       return null;
@@ -87,10 +121,25 @@ function renderMessageParts(parts: readonly unknown[]) {
 
     switch (typedPart.type) {
       case 'text':
+        const rawText = typeof typedPart.text === 'string' ? typedPart.text : '';
+        const toolkitSlug = extractToolkitSlugFromText(rawText);
+        const displayText = stripConnectMarkerFromText(rawText);
+
         return (
-          <MessageResponse key={`text-${index}`}>
-            {typedPart.text}
-          </MessageResponse>
+          <div key={`text-${index}`} className="space-y-2">
+            <MessageResponse>
+              {displayText || typedPart.text}
+            </MessageResponse>
+            {toolkitSlug && onConnectToolkit && (
+              <button
+                type="button"
+                className="rounded-md border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+                onClick={() => onConnectToolkit(toolkitSlug)}
+              >
+                Connect to {formatToolkitName(toolkitSlug)}
+              </button>
+            )}
+          </div>
         );
 
       case 'thinking':
@@ -174,6 +223,13 @@ function ConversationChat() {
   const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
   const [isWorkflowDialogOpen, setIsWorkflowDialogOpen] = useState(false);
   const [isStoppingWorkflow, setIsStoppingWorkflow] = useState(false);
+  const [isToolkitDialogOpen, setIsToolkitDialogOpen] = useState(false);
+  const [toolkits, setToolkits] = useState<ToolkitListItem[]>([]);
+  const [toolkitsError, setToolkitsError] = useState<string | null>(null);
+  const [isLoadingToolkits, setIsLoadingToolkits] = useState(false);
+  const [toolkitSearch, setToolkitSearch] = useState('');
+  const [connectingToolkitSlug, setConnectingToolkitSlug] = useState<string | null>(null);
+  const [disconnectingToolkitId, setDisconnectingToolkitId] = useState<string | null>(null);
   const activeWorkflow = useQuery(
     api.workflows.getWorkflow,
     activeWorkflowId ? { workflowId: activeWorkflowId as any } : 'skip'
@@ -240,6 +296,13 @@ function ConversationChat() {
     setActiveWorkflowId(null);
     setIsWorkflowDialogOpen(false);
     setIsStoppingWorkflow(false);
+    setIsToolkitDialogOpen(false);
+    setToolkits([]);
+    setToolkitsError(null);
+    setIsLoadingToolkits(false);
+    setToolkitSearch('');
+    setConnectingToolkitSlug(null);
+    setDisconnectingToolkitId(null);
     postedWorkflowSummaryRef.current = null;
     lastSyncedSignatureRef.current = '';
     shouldAllowDeleteSyncRef.current = false;
@@ -389,6 +452,149 @@ function ConversationChat() {
 
     return nextConversationId;
   };
+
+  const fetchToolkitData = async () => {
+    setIsLoadingToolkits(true);
+    setToolkitsError(null);
+
+    try {
+      const toolkitsRes = await fetch('/api/composio/toolkits');
+
+      if (!toolkitsRes.ok) {
+        throw new Error('Could not load toolkits.');
+      }
+
+      const toolkitsJson = await toolkitsRes.json() as { items?: ToolkitListItem[] };
+
+      setToolkits(toolkitsJson.items ?? []);
+    } catch (error) {
+      console.error(error);
+      setToolkitsError('Failed to load toolkits. Please try again.');
+    } finally {
+      setIsLoadingToolkits(false);
+    }
+  };
+
+  const connectToolkit = async (toolkitSlug: string) => {
+    setConnectingToolkitSlug(toolkitSlug);
+
+    try {
+      const response = await fetch('/api/composio/toolkits/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolkitSlug }),
+      });
+
+      if (!response.ok) {
+        let message = 'Failed to start toolkit connection.';
+        try {
+          const payload = await response.json() as {
+            error?: string;
+            details?: { message?: string } | string;
+            fallbackError?: string;
+          };
+
+          if (typeof payload?.details === 'string' && payload.details.trim()) {
+            message = payload.details;
+          } else if (typeof payload?.fallbackError === 'string' && payload.fallbackError.trim()) {
+            message = payload.fallbackError;
+          } else if (
+            payload?.details &&
+            typeof payload.details === 'object' &&
+            typeof payload.details.message === 'string' &&
+            payload.details.message.trim()
+          ) {
+            message = payload.details.message;
+          } else if (typeof payload?.error === 'string' && payload.error.trim()) {
+            message = payload.error;
+          }
+        } catch {
+          // Ignore JSON parsing errors and use fallback message.
+        }
+
+        throw new Error(message);
+      }
+
+      const payload = await response.json() as { message?: string; redirectUrl?: string };
+      if (payload.redirectUrl) {
+        window.open(payload.redirectUrl, '_blank', 'noopener,noreferrer');
+      } else if (payload.message) {
+        alert(payload.message);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : 'Unable to start toolkit connection. Please try again.');
+    } finally {
+      setConnectingToolkitSlug(null);
+      await fetchToolkitData();
+    }
+  };
+
+  const disconnectToolkit = async (connectedAccountId: string) => {
+    setDisconnectingToolkitId(connectedAccountId);
+
+    try {
+      const response = await fetch('/api/composio/toolkits/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectedAccountId }),
+      });
+
+      if (!response.ok) {
+        let message = 'Failed to disconnect toolkit.';
+        try {
+          const payload = await response.json() as { error?: string; details?: string };
+          if (typeof payload?.details === 'string' && payload.details.trim()) {
+            message = payload.details;
+          } else if (typeof payload?.error === 'string' && payload.error.trim()) {
+            message = payload.error;
+          }
+        } catch {
+          // Ignore JSON parsing errors and use fallback message.
+        }
+
+        throw new Error(message);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : 'Unable to disconnect toolkit. Please try again.');
+    } finally {
+      setDisconnectingToolkitId(null);
+      await fetchToolkitData();
+    }
+  };
+
+  useEffect(() => {
+    if (!isToolkitDialogOpen) {
+      return;
+    }
+
+    void fetchToolkitData();
+  }, [isToolkitDialogOpen]);
+
+  const visibleToolkits = useMemo(() => {
+    const normalizedSearch = toolkitSearch.trim().toLowerCase();
+
+    return toolkits
+      .filter((toolkit) => {
+        return (
+          normalizedSearch.length === 0 ||
+          toolkit.name.toLowerCase().includes(normalizedSearch) ||
+          toolkit.slug.toLowerCase().includes(normalizedSearch)
+        );
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [toolkitSearch, toolkits]);
+
+  const connectedToolkits = useMemo(
+    () => visibleToolkits.filter((toolkit) => toolkit.isConnected),
+    [visibleToolkits]
+  );
+
+  const otherToolkits = useMemo(
+    () => visibleToolkits.filter((toolkit) => !toolkit.isConnected),
+    [visibleToolkits]
+  );
 
   const hasMessages = messages.length > 0;
 
@@ -633,7 +839,9 @@ function ConversationChat() {
                     </div>
                   ) : (
                     <div className="flex w-full flex-col gap-4">
-                      {renderMessageParts(message.parts)}
+                      {renderMessageParts(message.parts, (slug) => {
+                        void connectToolkit(slug);
+                      })}
                     </div>
                   )}
                 </MessageContent>
@@ -838,6 +1046,145 @@ function ConversationChat() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={isToolkitDialogOpen} onOpenChange={setIsToolkitDialogOpen}>
+        <DialogContent className="h-[85dvh] max-w-5xl overflow-hidden p-0">
+          <div className="flex h-full min-h-0 flex-col p-5">
+            <DialogHeader>
+              <DialogTitle>Toolkits</DialogTitle>
+              <DialogDescription>
+                Search and connect toolkits for your chat session.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="mt-4 flex items-center gap-2">
+              <label className="relative min-w-[240px] flex-1">
+                <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  className="h-9 w-full rounded-md border bg-background pl-9 pr-3 text-sm"
+                  onChange={(event) => setToolkitSearch(event.target.value)}
+                  placeholder="Search connectors..."
+                  value={toolkitSearch}
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+              {isLoadingToolkits && (
+                <div className="rounded-lg border bg-sidebar p-4 text-sm text-muted-foreground">
+                  Loading toolkits...
+                </div>
+              )}
+
+              {!isLoadingToolkits && toolkitsError && (
+                <div className="flex items-center justify-between rounded-lg border bg-sidebar p-4 text-sm text-muted-foreground">
+                  <span>{toolkitsError}</span>
+                  <button
+                    type="button"
+                    className="rounded-md border px-3 py-1 text-xs font-medium"
+                    onClick={() => void fetchToolkitData()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {!isLoadingToolkits && !toolkitsError && visibleToolkits.length === 0 && (
+                <div className="rounded-lg border bg-sidebar p-4 text-sm text-muted-foreground">
+                  No toolkits match your current search and filter.
+                </div>
+              )}
+
+              {!isLoadingToolkits && !toolkitsError && visibleToolkits.length > 0 && (
+                <div className="flex flex-col gap-3">
+                  {connectedToolkits.map((toolkit) => (
+                    <div
+                      key={toolkit.slug}
+                      className="flex items-start gap-3 rounded-xl border bg-sidebar p-4"
+                    >
+                      {toolkit.logo ? (
+                        <img
+                          alt={`${toolkit.name} logo`}
+                          className="size-8 rounded-md  bg-background object-cover"
+                          src={toolkit.logo}
+                        />
+                      ) : (
+                        <div className="size-8 rounded-md border bg-background" />
+                      )}
+
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-sm">{toolkit.name}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-flex size-8 items-center justify-center rounded-md border bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                          title="Connected"
+                        >
+                          <CheckIcon className="size-4" />
+                        </span>
+                        <button
+                          type="button"
+                          className="inline-flex size-8 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                          disabled={!toolkit.connectedAccountId || disconnectingToolkitId === toolkit.connectedAccountId}
+                          onClick={() => {
+                            if (!toolkit.connectedAccountId) {
+                              return;
+                            }
+                            void disconnectToolkit(toolkit.connectedAccountId);
+                          }}
+                          title="Disconnect toolkit"
+                        >
+                          <Trash2Icon className="size-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {connectedToolkits.length > 0 && otherToolkits.length > 0 && (
+                    <div className="my-1 border-t" />
+                  )}
+
+                  {otherToolkits.map((toolkit) => {
+                    const isConnecting = connectingToolkitSlug === toolkit.slug;
+
+                    return (
+                      <div
+                        key={toolkit.slug}
+                        className="flex items-start gap-3 rounded-xl border bg-sidebar p-4"
+                      >
+                        {toolkit.logo ? (
+                          <img
+                            alt={`${toolkit.name} logo`}
+                            className="size-8 rounded-md  bg-background object-cover"
+                            src={toolkit.logo}
+                          />
+                        ) : (
+                          <div className="size-8 rounded-md border bg-background" />
+                        )}
+
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-sm">{toolkit.name}</p>
+                        </div>
+
+                        <button
+                          type="button"
+                          className="inline-flex size-8 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                          disabled={isConnecting}
+                          onClick={() => void connectToolkit(toolkit.slug)}
+                          title="Add toolkit"
+                        >
+                          <PlusIcon className="size-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="sticky bottom-0 mt-4 bg-background/95 pb-2 pt-2 backdrop-blur supports-backdrop-filter:bg-background/80">
         <PromptInput
           onSubmit={async ({ text }, event) => {
@@ -879,16 +1226,25 @@ function ConversationChat() {
                   View workflow
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => setWorkflowMode(prev => !prev)}
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              <select
+                aria-label="Select input mode"
+                className={`rounded-full border pl-2 pr-1 py-1 text-xs font-medium transition-colors ${
                   workflowMode
                     ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-border bg-background text-muted-foreground hover:bg-muted'
                 }`}
+                onChange={(event) => setWorkflowMode(event.target.value === "workflow")}
+                value={workflowMode ? "workflow" : "ask"}
               >
-                Workflow
+                <option value="ask">Ask</option>
+                <option value="workflow">Workflow</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setIsToolkitDialogOpen(true)}
+                className="rounded-full border px-3 py-1 text-xs font-medium transition-colors border-border bg-background text-muted-foreground hover:bg-muted"
+              >
+                Toolkits
               </button>
             </div>
             <PromptInputSubmit onStop={stop} status={status} />
