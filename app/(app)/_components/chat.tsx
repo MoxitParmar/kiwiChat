@@ -290,13 +290,21 @@ function ConversationChat() {
 
     lastSyncedSignatureRef.current = nextSignature;
 
-    void syncConversationMessages({
-      conversationId: selectedConversationId as Id<'conversations'>,
-      messages: messages.map(message => ({
+    const syncableMessages = messages
+      .map(message => ({
         clientMessageId: message.id,
         role: message.role,
-        content: getMessageText(message.parts),
-      })),
+        content: getMessageText(message.parts).trim(),
+      }))
+      .filter(message => message.content.length > 0);
+
+    if (syncableMessages.length === 0) {
+      return;
+    }
+
+    void syncConversationMessages({
+      conversationId: selectedConversationId as Id<'conversations'>,
+      messages: syncableMessages,
     });
   }, [messages, selectedConversationId, status, syncConversationMessages]);
 
@@ -472,17 +480,18 @@ function ConversationChat() {
     const stepLines = completedNodes
       .map((node, index) => {
         const text = extractWorkflowNodeText(node.output);
-        if (!text) return '';
         const compactText = text.replace(/\s+/g, ' ').trim();
-        const shortText = compactText.length > 220
-          ? `${compactText.slice(0, 220)}...`
-          : compactText;
-        return `${index + 1}. ${node.tool}: ${shortText}`;
+
+        if (!compactText) {
+          return `${index + 1}. ${node.tool}\n   - Completed`;
+        }
+
+        return `${index + 1}. ${node.tool}\n   - ${compactText}`;
       })
       .filter(Boolean);
 
     return stepLines.length > 0
-      ? `Workflow completed:\n${stepLines.join('\n')}`
+      ? `Workflow completed successfully.\n\n${stepLines.join('\n\n')}`
       : 'Workflow completed successfully.';
   };
 
@@ -635,15 +644,6 @@ function ConversationChat() {
                     <CopyIcon className="size-4" />
                   </MessageAction>
 
-                  {isUser && !isEditing && (
-                    <MessageAction
-                      label="Edit"
-                      onClick={() => startEditingUserMessage(message.id, text)}
-                      tooltip="Edit"
-                    >
-                      <PencilIcon className="size-4" />
-                    </MessageAction>
-                  )}
 
                   <MessageAction
                     label="Delete"

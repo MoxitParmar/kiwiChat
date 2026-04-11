@@ -287,8 +287,8 @@ export const syncConversationMessages = mutation({
     );
     const now = Date.now();
     const normalizedMessages = args.messages.map((message, index) => ({
-      ...message,
-      createdAt: now + index,
+        ...message,
+        createdAt: now + index,
     }));
 
     for (const message of normalizedMessages) {
@@ -313,12 +313,18 @@ export const syncConversationMessages = mutation({
       normalizedMessages.map((message) => message.clientMessageId)
     );
 
-    for (const existingMessage of existingMessages) {
-      if (
-        existingMessage.clientMessageId &&
-        !incomingClientMessageIds.has(existingMessage.clientMessageId)
-      ) {
-        await ctx.db.delete(existingMessage._id);
+    const hasIdOverlap = normalizedMessages.some((message) =>
+      existingByClientMessageId.has(message.clientMessageId)
+    );
+
+    if (hasIdOverlap) {
+      for (const existingMessage of existingMessages) {
+        if (
+          existingMessage.clientMessageId &&
+          !incomingClientMessageIds.has(existingMessage.clientMessageId)
+        ) {
+          await ctx.db.delete(existingMessage._id);
+        }
       }
     }
 
