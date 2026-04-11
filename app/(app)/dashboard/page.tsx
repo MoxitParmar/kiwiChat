@@ -1,9 +1,10 @@
+import Chat from "../_components/chat";
 
 
 export default function Dashboard() {
   return (
     <div>
-      hello world
+      <Chat />
     </div>
   );
 }
