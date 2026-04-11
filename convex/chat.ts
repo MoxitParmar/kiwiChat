@@ -268,6 +268,7 @@ export const appendMessage = mutation({
 export const syncConversationMessages = mutation({
   args: {
     conversationId: v.id("conversations"),
+    allowDeletes: v.optional(v.boolean()),
     messages: v.array(
       v.object({
         clientMessageId: v.string(),
@@ -317,7 +318,7 @@ export const syncConversationMessages = mutation({
       existingByClientMessageId.has(message.clientMessageId)
     );
 
-    if (hasIdOverlap) {
+    if (args.allowDeletes && hasIdOverlap) {
       for (const existingMessage of existingMessages) {
         if (
           existingMessage.clientMessageId &&

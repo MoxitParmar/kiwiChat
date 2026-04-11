@@ -180,6 +180,7 @@ function ConversationChat() {
   );
   const postedWorkflowSummaryRef = useRef<string | null>(null);
   const lastSyncedSignatureRef = useRef('');
+  const shouldAllowDeleteSyncRef = useRef(false);
   const hydratedConversationIdRef = useRef<string | null>(null);
   const selectedConversationId = searchParams.get('conversationId');
   const conversationIdRef = useRef<string | null>(selectedConversationId);
@@ -241,6 +242,7 @@ function ConversationChat() {
     setIsStoppingWorkflow(false);
     postedWorkflowSummaryRef.current = null;
     lastSyncedSignatureRef.current = '';
+    shouldAllowDeleteSyncRef.current = false;
   }, [selectedConversationId]);
 
   const persistedUiMessages = useMemo(
@@ -302,8 +304,12 @@ function ConversationChat() {
       return;
     }
 
+    const allowDeletes = shouldAllowDeleteSyncRef.current;
+    shouldAllowDeleteSyncRef.current = false;
+
     void syncConversationMessages({
       conversationId: selectedConversationId as Id<'conversations'>,
+      allowDeletes,
       messages: syncableMessages,
     });
   }, [messages, selectedConversationId, status, syncConversationMessages]);
@@ -326,6 +332,7 @@ function ConversationChat() {
   };
 
   const deleteMessage = (messageId: string) => {
+    shouldAllowDeleteSyncRef.current = true;
     setMessages(current => current.filter(message => message.id !== messageId));
 
     if (editingId === messageId) {
