@@ -39,7 +39,7 @@ import {
   ReasoningContent,
 } from '@/components/ai-elements/reasoning';
 import { Shimmer } from '@/components/ai-elements/shimmer';
-import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from 'lucide-react';
+import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, RefreshCwIcon, SearchIcon, Trash2Icon } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
@@ -1277,6 +1277,16 @@ function ConversationChat() {
                   value={toolkitSearch}
                 />
               </label>
+              <button
+                type="button"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-background text-muted-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                onClick={() => void fetchToolkitData()}
+                disabled={isLoadingToolkits}
+                title="Refresh toolkits"
+                aria-label="Refresh toolkits"
+              >
+                <RefreshCwIcon className={`size-4 ${isLoadingToolkits ? 'animate-spin' : ''}`} />
+              </button>
             </div>
 
             <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
