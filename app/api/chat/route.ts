@@ -55,45 +55,60 @@ export async function POST(req: Request) {
   const externalUserId = userId ?? 'anonymous';
 
   if (workflowMode) {
-    const lastMessage = messages[messages.length - 1];
-    const userText = typeof (lastMessage as any)?.content === 'string'
-      ? (lastMessage as any).content
-      : (lastMessage.parts?.find((p: any) => p.type === 'text') as any)?.text ?? '';
+    try {
+      const lastMessage = messages[messages.length - 1];
+      const userText = typeof (lastMessage as any)?.content === 'string'
+        ? (lastMessage as any).content
+        : (lastMessage.parts?.find((p: any) => p.type === 'text') as any)?.text ?? '';
 
+      const dagJson = await runPlanner(userText, localAiSettings);
 
-    const dagJson = await runPlanner(userText, localAiSettings);
+      const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+      const workflowId = await convex.mutation(api.workflows.createWorkflow, {
+        conversationId: conversationId as any,
+        userId: externalUserId,
+        dagJson,
+      });
 
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-    const workflowId = await convex.mutation(api.workflows.createWorkflow, {
-      conversationId: conversationId as any,
-      userId: externalUserId,
-      dagJson,
-    });
-
-    return new Response(
-      JSON.stringify({ type: 'workflow-plan', dag: JSON.parse(dagJson), workflowId }),
-      { headers: { 'Content-Type': 'application/json' } }
-    );
+      return new Response(
+        JSON.stringify({ type: 'workflow-plan', dag: JSON.parse(dagJson), workflowId }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to generate workflow plan';
+      return new Response(
+        JSON.stringify({ error: message }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
   }
 
-  const composioToolsResult = await getComposioTools(externalUserId);
-  const tools = composioToolsResult?.tools;
-  const mcpClient = composioToolsResult?.client;
+  try {
+    const composioToolsResult = await getComposioTools(externalUserId);
+    const tools = composioToolsResult?.tools;
+    const mcpClient = composioToolsResult?.client;
 
-  const chatSettings = await getResolvedLocalModelSettings({ ...localAiSettings, model: localAiSettings?.model ?? CHAT_MODEL });
-  const model = await getLocalModel(chatSettings);
-  const result = streamText({
-    model,
-    messages: await convertToModelMessages(messages),
-    system: CONNECT_MARKER_INSTRUCTION,
-    stopWhen: stepCountIs(10),
-    tools,
-    onFinish: async () => {
-      if (mcpClient) {
-        await mcpClient.close();
-      }
-    },
-  });
+    const chatSettings = await getResolvedLocalModelSettings({ ...localAiSettings, model: localAiSettings?.model ?? CHAT_MODEL });
+    const model = await getLocalModel(chatSettings);
+    const result = streamText({
+      model,
+      messages: await convertToModelMessages(messages),
+      system: CONNECT_MARKER_INSTRUCTION,
+      stopWhen: stepCountIs(10),
+      tools,
+      onFinish: async () => {
+        if (mcpClient) {
+          await mcpClient.close();
+        }
+      },
+    });
 
-  return result.toUIMessageStreamResponse();
+    return result.toUIMessageStreamResponse();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to process chat request';
+    return new Response(
+      JSON.stringify({ error: message }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
 }

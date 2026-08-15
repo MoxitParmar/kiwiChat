@@ -342,7 +342,17 @@ function ConversationChat() {
             ...init,
             body: JSON.stringify(body),
           });
-          if (!res.ok) return res;
+          
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            const errorMessage = errorData?.error || `Workflow error: ${res.statusText}`;
+            toast.error(errorMessage);
+            return new Response(
+              new ReadableStream({ start(c) { c.close(); } }),
+              { headers: { 'Content-Type': 'text/event-stream' } }
+            );
+          }
+          
           const data = await res.json();
           if (data.type === 'workflow-plan') {
             setWorkflowPlan({ dag: data.dag, workflowId: data.workflowId });
@@ -354,7 +364,20 @@ function ConversationChat() {
           );
         }
 
-        return fetch(input, { ...init, body: JSON.stringify(body) });
+        const res = await fetch(input, { ...init, body: JSON.stringify(body) });
+        
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          const errorMessage = errorData?.error || `Chat error: ${res.statusText}`;
+          toast.error(errorMessage);
+          // Return an error stream response
+          return new Response(
+            new ReadableStream({ start(c) { c.close(); } }),
+            { status: 400, headers: { 'Content-Type': 'text/event-stream' } }
+          );
+        }
+        
+        return res;
       },
     }),
   });

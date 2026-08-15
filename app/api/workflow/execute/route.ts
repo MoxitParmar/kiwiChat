@@ -14,51 +14,60 @@ export async function POST(req: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const { workflowId, dagOverride, localAiSettings } = await req.json() as {
-    workflowId?: string;
-    dagOverride?: unknown;
-    localAiSettings?: Partial<LocalAiSettings>;
-  };
-  if (!workflowId) {
-    return new Response('Missing workflowId', { status: 400 });
+  try {
+    const { workflowId, dagOverride, localAiSettings } = await req.json() as {
+      workflowId?: string;
+      dagOverride?: unknown;
+      localAiSettings?: Partial<LocalAiSettings>;
+    };
+    if (!workflowId) {
+      return new Response('Missing workflowId', { status: 400 });
+    }
+
+    const resolvedLocalAiSettings = localAiSettings
+      ? await getResolvedLocalModelSettings(localAiSettings)
+      : undefined;
+
+    // Fetch the workflow from Convex to get dagJson
+    const workflow = await convex.query(api.workflows.getWorkflow, {
+      workflowId: workflowId as any,
+    });
+
+    if (!workflow) {
+      return new Response('Workflow not found', { status: 404 });
+    }
+
+    if (workflow.userId !== userId) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+
+    let dagJson = workflow.dagJson;
+    if (dagOverride && typeof dagOverride === 'object') {
+      dagJson = JSON.stringify(dagOverride);
+    }
+
+    // Approve the workflow in Convex
+    await convex.mutation(api.workflows.approveWorkflow, {
+      workflowId: workflowId as any,
+    });
+
+    // Trigger the Trigger.dev task
+    await tasks.trigger<typeof executeWorkflow>('execute-workflow', {
+      workflowId,
+      dagJson,
+      userId,
+      localAiSettings: resolvedLocalAiSettings,
+    });
+
+    return new Response(
+      JSON.stringify({ success: true, workflowId }),
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to execute workflow';
+    return new Response(
+      JSON.stringify({ error: message }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
   }
-
-  const resolvedLocalAiSettings = localAiSettings
-    ? await getResolvedLocalModelSettings(localAiSettings)
-    : undefined;
-
-  // Fetch the workflow from Convex to get dagJson
-  const workflow = await convex.query(api.workflows.getWorkflow, {
-    workflowId: workflowId as any,
-  });
-
-  if (!workflow) {
-    return new Response('Workflow not found', { status: 404 });
-  }
-
-  if (workflow.userId !== userId) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
-  let dagJson = workflow.dagJson;
-  if (dagOverride && typeof dagOverride === 'object') {
-    dagJson = JSON.stringify(dagOverride);
-  }
-
-  // Approve the workflow in Convex
-  await convex.mutation(api.workflows.approveWorkflow, {
-    workflowId: workflowId as any,
-  });
-
-  // Trigger the Trigger.dev task
-  await tasks.trigger<typeof executeWorkflow>('execute-workflow', {
-    workflowId,
-    dagJson,
-    userId,
-    localAiSettings: resolvedLocalAiSettings,
-  });
-
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { 'Content-Type': 'application/json' },
-  });
 }

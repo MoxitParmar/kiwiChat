@@ -61,17 +61,27 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
     return settings;
   }
 
+  // User provided a localhost URL, automatically create a public tunnel for it
+  // This works the same way everywhere - converts localhost to a public URL
+  // for use in API routes, Trigger.dev background tasks, and workflows
   try {
     const parsed = new URL(settings.baseURL);
     const port = Number(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'));
     const pathname = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
 
-    const tunnel = await localtunnel({
+    // Create tunnel with timeout to prevent indefinite hanging
+    const tunnelPromise = localtunnel({
       port,
       host: process.env.LOCALTUNNEL_HOST || 'https://loca.lt',
       subdomain: process.env.LOCALTUNNEL_SUBDOMAIN || undefined,
       local_host: '127.0.0.1',
     });
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Tunnel connection timeout. Make sure your local LLM server is running on the specified port.')), 30000)
+    );
+
+    const tunnel = await Promise.race([tunnelPromise, timeoutPromise]);
 
     const publicUrl = new URL(tunnel.url);
     if (pathname) {
@@ -83,9 +93,9 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
       baseURL: publicUrl.toString().replace(/\/$/, ''),
     };
   } catch (error) {
-    const hint = settings.baseURL;
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     throw new Error(
-      `Unable to create a public tunnel for the local AI server at ${hint}. Configure a public model endpoint or run a local tunnel before starting workflow execution.`
+      `Failed to create tunnel for local LLM: ${errorMessage}`
     );
   }
 }
