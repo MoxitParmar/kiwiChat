@@ -306,12 +306,15 @@ export function SidebarWithChatHistory() {
           <DialogHeader>
             <DialogTitle>Local AI Server</DialogTitle>
             <DialogDescription>
-              Configure the local OpenAI-compatible server used by this app. These values are stored in the browser and used by the local AI provider.
+              Configure the OpenAI-compatible server used by this app. These values are stored in the browser and used by the local AI provider.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
             <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                If your model runs on your machine, create a public tunnel from that machine and paste that URL here. Example: <span className="font-mono">npx localtunnel --port 11434</span> and use the returned https://... URL.
+              </p>
               <Label htmlFor="local-ai-base-url">Base URL</Label>
               <Input
                 id="local-ai-base-url"

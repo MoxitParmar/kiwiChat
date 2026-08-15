@@ -43,7 +43,7 @@ import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, RefreshCwIcon, SearchIcon, T
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
-import { getRuntimeLocalAiSettings, isLocalhostLikeUrl } from '@/lib/ai/local-settings';
+import { getRuntimeLocalAiSettings } from '@/lib/ai/local-settings';
 import {
   Dialog,
   DialogContent,
@@ -333,47 +333,6 @@ function ConversationChat() {
       fetch: async (input, init) => {
         const body = JSON.parse((init?.body as string) ?? '{}');
         const localAiSettings = getRuntimeLocalAiSettings();
-
-        if (isLocalhostLikeUrl(localAiSettings.baseURL) && typeof window !== 'undefined' && process.env.NEXT_PUBLIC_VERCEL === '1') {
-          toast.error('This deployment cannot reach your local model. Please set a public base URL or run the app locally with a tunnel.');
-          return new Response(
-            new ReadableStream({ start(c) { c.close(); } }),
-            { status: 400, headers: { 'Content-Type': 'text/event-stream' } }
-          );
-        }
-
-        if (isLocalhostLikeUrl(localAiSettings.baseURL)) {
-          try {
-            const parsed = new URL(localAiSettings.baseURL);
-            const port = Number(parsed.port || 11434);
-            const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
-            const tunnelRes = await fetch(`/api/ai/tunnel-config?port=${port}`);
-
-            if (!tunnelRes.ok) {
-              const payload = await tunnelRes.json().catch(() => ({}));
-              throw new Error(payload.error || 'Failed to resolve local tunnel URL.');
-            }
-
-            const tunnelData = await tunnelRes.json() as { url?: string };
-            if (!tunnelData.url) {
-              throw new Error('No tunnel URL was returned by the local AI tunnel endpoint.');
-            }
-
-            const resolved = new URL(tunnelData.url);
-            if (path) {
-              resolved.pathname = path;
-            }
-
-            localAiSettings.baseURL = resolved.toString().replace(/\/$/, '');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to resolve local tunnel URL.';
-            toast.error(message);
-            return new Response(
-              new ReadableStream({ start(c) { c.close(); } }),
-              { status: 400, headers: { 'Content-Type': 'text/event-stream' } }
-            );
-          }
-        }
 
         body.workflowMode = workflowModeRef.current;
         body.conversationId = conversationIdRef.current ?? undefined;
