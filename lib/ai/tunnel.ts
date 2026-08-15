@@ -63,15 +63,21 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
     return settings;
   }
 
-  // If we're on the server side (API routes or Trigger tasks), try to get tunnel from API endpoint
+  if (typeof window === 'undefined' && process.env.VERCEL) {
+    throw new Error(
+      'Localhost AI URLs cannot be used from a deployed Vercel server. Resolve the URL in the browser or set LOCAL_AI_PUBLIC_BASE_URL to a public OpenAI-compatible endpoint.'
+    );
+  }
+
+  // Local development only: resolve from the local machine that can reach localhost.
   if (typeof window === 'undefined') {
     try {
       const parsed = new URL(settings.baseURL);
       const port = Number(parsed.port || 11434);
       const pathname = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+      const tunnelBase = `http://127.0.0.1:${process.env.PORT || 3000}/api/ai/tunnel-config?port=${port}`;
 
-      // Call our own API endpoint to get tunnel URL
-      const response = await fetch(`http://localhost:3000/api/ai/tunnel-config?port=${port}`, {
+      const response = await fetch(tunnelBase, {
         method: 'GET',
       });
 
@@ -96,6 +102,6 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
     }
   }
 
-  // Client side - return as-is, will be resolved via hook
+  // Client side - return as-is; the browser resolves localhost before the request is sent.
   return settings;
 }

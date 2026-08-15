@@ -6,7 +6,7 @@ import { streamText, UIMessage, convertToModelMessages, stepCountIs } from 'ai';
 import { api } from '@/convex/_generated/api';
 import { runPlanner } from '@/lib/ai/planner';
 import { getLocalModel, getResolvedLocalModelSettings, LOCAL_LLM_MODEL } from '@/lib/ai/provider';
-import type { LocalAiSettings } from '@/lib/ai/local-settings';
+import { isLocalhostLikeUrl, normalizeLocalAiSettings, type LocalAiSettings } from '@/lib/ai/local-settings';
 
 const composioApiKey = process.env.COMPOSIO_API_KEY;
 const CHAT_MODEL = LOCAL_LLM_MODEL;
@@ -53,6 +53,16 @@ export async function POST(req: Request) {
   const { userId } = await auth();
   const { messages, workflowMode, conversationId, localAiSettings } = await req.json() as ChatRequestBody;
   const externalUserId = userId ?? 'anonymous';
+  const normalizedLocalAiSettings = normalizeLocalAiSettings(localAiSettings);
+
+  if (isLocalhostLikeUrl(normalizedLocalAiSettings.baseURL) && process.env.VERCEL) {
+    return new Response(
+      JSON.stringify({
+        error: 'The app is running on a deployed server, but the local model URL still points to localhost. Resolve the tunnel on the browser first or set LOCAL_AI_PUBLIC_BASE_URL to a public OpenAI-compatible endpoint.',
+      }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
 
   if (workflowMode) {
     try {
