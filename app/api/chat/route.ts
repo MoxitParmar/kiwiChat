@@ -31,7 +31,7 @@ async function getComposioTools(externalUserId: string) {
 
   try {
     const composio = new Composio({ apiKey: composioApiKey });
-    const session = await composio.create(externalUserId);
+    const session = await composio.create(externalUserId, { mcp: true });
     const mcpSession = session as unknown as { mcp: { type: 'http' | 'sse'; url: string; headers: Record<string, string> } };
     const client = await createMCPClient({
       transport: {
@@ -41,7 +41,8 @@ async function getComposioTools(externalUserId: string) {
       },
     });
 
-    return client.tools();
+    const tools = await client.tools();
+    return { client, tools };
   } catch (error) {
     console.error('Failed to load Composio tools:', error);
     return undefined;
@@ -75,7 +76,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const tools = await getComposioTools(externalUserId);
+  const composioToolsResult = await getComposioTools(externalUserId);
+  const tools = composioToolsResult?.tools;
+  const mcpClient = composioToolsResult?.client;
 
   const result = streamText({
     model: getLocalModel({ ...localAiSettings, model: localAiSettings?.model ?? CHAT_MODEL }),
@@ -83,6 +86,11 @@ export async function POST(req: Request) {
     system: CONNECT_MARKER_INSTRUCTION,
     stopWhen: stepCountIs(10),
     tools,
+    onFinish: async () => {
+      if (mcpClient) {
+        await mcpClient.close();
+      }
+    },
   });
 
   return result.toUIMessageStreamResponse();
