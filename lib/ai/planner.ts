@@ -1,4 +1,6 @@
 import { generateText } from 'ai';
+import { getLocalModel, getResolvedLocalModelSettings } from '@/lib/ai/provider';
+import type { LocalAiSettings } from '@/lib/ai/local-settings';
 
 export interface DagNode {
   id: string;
@@ -30,7 +32,9 @@ function parseDagText(text: string): DagJson {
 
 export async function runPlanner(
   userMessage: string,
+  localAiSettings?: Partial<LocalAiSettings>,
 ): Promise<string> {
+  const runtimeSettings = await getResolvedLocalModelSettings(localAiSettings);
   const systemPrompt = `You are a workflow planner. The user wants to automate a multi-step task.
 Convert their request into a DAG JSON. Return ONLY valid JSON — no explanation, no markdown, no backticks.
 
@@ -62,8 +66,9 @@ Rules you MUST follow:
 - Do not add nodes for tool discovery.
 - Only include nodes that directly accomplish the user's stated goal.`;
 
+  const model = await getLocalModel(runtimeSettings);
   const { text } = await generateText({
-    model: "xai/grok-4.1-fast-non-reasoning" ,
+    model,
     system: systemPrompt,
     prompt: userMessage,
   });
@@ -73,7 +78,7 @@ Rules you MUST follow:
 
   if (hasInvalidNode) {
     const retry = await generateText({
-      model: "xai/grok-4.1-fast-non-reasoning" ,
+      model,
       system: systemPrompt,
       prompt: `${userMessage}\n\nYour last DAG was invalid. Regenerate with nodes that all include: id, tool, params.request, dependsOn.`,
     });

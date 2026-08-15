@@ -1,12 +1,13 @@
 "use client"
 
-import { useMemo, useState } from "react"
-import Image from "next/image"
+import { useEffect, useMemo, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useMutation, useQuery } from "convex/react"
 import { useAuth } from "@clerk/nextjs"
 import { api } from "@/convex/_generated/api"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Sidebar,
   SidebarContent,
@@ -31,7 +32,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { BookmarkIcon, PlusIcon, MoreVerticalIcon, Trash2Icon } from "lucide-react"
+import { BookmarkIcon, PlusIcon, MoreVerticalIcon, Trash2Icon, Settings2Icon, CheckIcon } from "lucide-react"
+import {
+  DEFAULT_LOCAL_AI_SETTINGS,
+  getStoredLocalAiSettings,
+  setStoredLocalAiSettings,
+  type LocalAiSettings,
+} from "@/lib/ai/local-settings"
 
 type ConversationRecord = {
   _id: string
@@ -160,6 +167,13 @@ export function SidebarWithChatHistory() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
+  const [isLocalAiSettingsOpen, setIsLocalAiSettingsOpen] = useState(false)
+  const [localAiSettings, setLocalAiSettings] = useState<LocalAiSettings>(DEFAULT_LOCAL_AI_SETTINGS)
+  const [localAiSettingsSaved, setLocalAiSettingsSaved] = useState(false)
+
+  useEffect(() => {
+    setLocalAiSettings(getStoredLocalAiSettings())
+  }, [])
 
   const groupedConversations = useMemo(() => {
     return groupConversations((conversations ?? []) as ConversationRecord[])
@@ -231,6 +245,16 @@ export function SidebarWithChatHistory() {
             <BookmarkIcon className="size-4" />
             <span>Saved Workflows</span>
           </Button>
+
+          <Button
+            variant="outline"
+            className="mb-4 flex w-full items-center justify-start gap-2"
+            onClick={() => setIsLocalAiSettingsOpen(true)}
+            type="button"
+          >
+            <Settings2Icon className="size-4" />
+            <span>Local AI Settings</span>
+          </Button>
         </div>
 
         {conversations === undefined ? (
@@ -267,6 +291,85 @@ export function SidebarWithChatHistory() {
             </Button>
             <Button variant="destructive" onClick={handleDeleteConversation}>
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isLocalAiSettingsOpen} onOpenChange={(open) => {
+        setIsLocalAiSettingsOpen(open)
+        if (!open) {
+          setLocalAiSettingsSaved(false)
+        }
+      }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Local AI Server</DialogTitle>
+            <DialogDescription>
+              Configure the local OpenAI-compatible server used by this app. These values are stored in the browser and used by the local AI provider.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="local-ai-base-url">Base URL</Label>
+              <Input
+                id="local-ai-base-url"
+                value={localAiSettings.baseURL}
+                onChange={(event) => {
+                  setLocalAiSettingsSaved(false)
+                  setLocalAiSettings((current) => ({ ...current, baseURL: event.target.value }))
+                }}
+                placeholder="http://localhost:11434/v1"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="local-ai-api-key">API key</Label>
+              <Input
+                id="local-ai-api-key"
+                value={localAiSettings.apiKey}
+                onChange={(event) => {
+                  setLocalAiSettingsSaved(false)
+                  setLocalAiSettings((current) => ({ ...current, apiKey: event.target.value }))
+                }}
+                placeholder="ollama"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="local-ai-model">Model</Label>
+              <Input
+                id="local-ai-model"
+                value={localAiSettings.model}
+                onChange={(event) => {
+                  setLocalAiSettingsSaved(false)
+                  setLocalAiSettings((current) => ({ ...current, model: event.target.value }))
+                }}
+                placeholder="llama3.1"
+              />
+            </div>
+
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsLocalAiSettingsOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setStoredLocalAiSettings(localAiSettings)
+                setLocalAiSettingsSaved(true)
+              }}
+            >
+              {localAiSettingsSaved ? (
+                <>
+                  <CheckIcon className="mr-2 size-4" />
+                  Saved
+                </>
+              ) : (
+                'Save settings'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

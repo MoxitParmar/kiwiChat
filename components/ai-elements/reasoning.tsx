@@ -204,7 +204,7 @@ export type ReasoningContentProps = ComponentProps<
   children: string;
 };
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const streamdownPlugins = { cjk, code, math, mermaid } as any;
 const streamdownComponents = {
   p: ({ children, ...props }: any) => (
     <p {...props} suppressHydrationWarning>

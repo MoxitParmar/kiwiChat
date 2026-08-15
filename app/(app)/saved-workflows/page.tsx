@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { PlayIcon, Trash2Icon } from "lucide-react";
 import { api } from "@/convex/_generated/api";
+import { getRuntimeLocalAiSettings } from "@/lib/ai/local-settings";
 
 function formatDate(timestamp: number) {
   return new Date(timestamp).toLocaleString();
@@ -39,7 +40,10 @@ export default function SavedWorkflowsPage() {
       const executeRes = await fetch('/api/workflow/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflowId: workflowResult.workflowId }),
+        body: JSON.stringify({
+          workflowId: workflowResult.workflowId,
+          localAiSettings: getRuntimeLocalAiSettings(),
+        }),
       });
 
       if (!executeRes.ok) {

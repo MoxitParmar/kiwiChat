@@ -3,6 +3,8 @@ import { ConvexHttpClient } from 'convex/browser';
 import { api } from '@/convex/_generated/api';
 import { tasks } from '@trigger.dev/sdk/v3';
 import type { executeWorkflow } from '@/trigger/executeWorkflow';
+import { getResolvedLocalModelSettings } from '@/lib/ai/provider';
+import type { LocalAiSettings } from '@/lib/ai/local-settings';
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -12,13 +14,18 @@ export async function POST(req: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const { workflowId, dagOverride } = await req.json() as {
+  const { workflowId, dagOverride, localAiSettings } = await req.json() as {
     workflowId?: string;
     dagOverride?: unknown;
+    localAiSettings?: Partial<LocalAiSettings>;
   };
   if (!workflowId) {
     return new Response('Missing workflowId', { status: 400 });
   }
+
+  const resolvedLocalAiSettings = localAiSettings
+    ? await getResolvedLocalModelSettings(localAiSettings)
+    : undefined;
 
   // Fetch the workflow from Convex to get dagJson
   const workflow = await convex.query(api.workflows.getWorkflow, {
@@ -48,6 +55,7 @@ export async function POST(req: Request) {
     workflowId,
     dagJson,
     userId,
+    localAiSettings: resolvedLocalAiSettings,
   });
 
   return new Response(JSON.stringify({ ok: true }), {

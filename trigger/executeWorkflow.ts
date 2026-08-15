@@ -4,8 +4,21 @@ import { api } from '@/convex/_generated/api';
 import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp';
 import { Composio } from '@composio/core';
 import { generateText, stepCountIs } from 'ai';
+import { getLocalModel } from '@/lib/ai/provider';
+import type { LocalAiSettings } from '@/lib/ai/local-settings';
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+function getConvexClient() {
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? process.env.CONVEX_URL;
+
+  if (!convexUrl) {
+    throw new Error(
+      'Missing Convex deployment URL. Set NEXT_PUBLIC_CONVEX_URL or CONVEX_URL in the environment before running the workflow task.'
+    );
+  }
+
+  return new ConvexHttpClient(convexUrl);
+}
+
 const NODE_START_STAGGER_MS = 800;
 const NODE_RETRY_ATTEMPTS = 5;
 const NODE_RETRY_BASE_DELAY_MS = 4000;
@@ -152,13 +165,14 @@ async function runNodeWithRetry(
   requestText: string,
   params: Record<string, any>,
   previousOutputs: Record<string, any>,
-  tools: Record<string, any>
+  tools: Record<string, any>,
+  localAiSettings?: Partial<LocalAiSettings>
 ) {
   let lastError: any;
 
   for (let attempt = 1; attempt <= NODE_RETRY_ATTEMPTS; attempt++) {
     try {
-      return await runNodeRequest(requestText, params, previousOutputs, tools);
+      return await runNodeRequest(requestText, params, previousOutputs, tools, localAiSettings);
     } catch (error) {
       lastError = error;
       const retryable = isRetryableNodeError(error);
@@ -180,7 +194,7 @@ async function runNodeWithRetry(
   throw new Error(`Node failed after ${NODE_RETRY_ATTEMPTS} attempts: ${getErrorMessage(lastError)}`);
 }
 
-async function isWorkflowStopped(workflowId: string) {
+async function isWorkflowStopped(workflowId: string, convex: ConvexHttpClient) {
   const workflow = await convex.query(api.workflows.getWorkflow, {
     workflowId: workflowId as any,
   });
@@ -215,7 +229,7 @@ async function getComposioNodeTools(userId: string) {
   if (!composioApiKey) throw new Error('COMPOSIO_API_KEY not set');
 
   const composio = new Composio({ apiKey: composioApiKey });
-  const session = await composio.create(userId);
+  const session = await composio.create(userId, { mcp: true });
   const client = await createMCPClient({
     transport: {
       type: session.mcp.type,
@@ -232,15 +246,17 @@ async function runNodeRequest(
   requestText: string,
   params: Record<string, any>,
   previousOutputs: Record<string, any>,
-  tools: Record<string, any>
+  tools: Record<string, any>,
+  localAiSettings?: Partial<LocalAiSettings>
 ): Promise<any> {
   const context = Object.keys(previousOutputs).length > 0
     ? `\n\nPrevious step outputs (JSON):\n${JSON.stringify(previousOutputs)}`
     : '';
 
   const nodePrompt = `${requestText}${context}`;
+  const model = await getLocalModel(localAiSettings);
   const result = await generateText({
-    model: "xai/grok-4.1-fast-non-reasoning" ,
+    model,
     system:
       'You are executing one automation step. Use tools whenever the request needs external data or side effects (e.g., GitHub fetch, Slack message). Always finish with a concise final text that states what was done and key result details.',
     prompt: nodePrompt,
@@ -269,8 +285,10 @@ export const executeWorkflow = task({
     workflowId: string;
     dagJson: string;
     userId: string;
+    localAiSettings?: Partial<LocalAiSettings>;
   }) => {
-    const { workflowId, dagJson, userId } = payload;
+    const { workflowId, dagJson, userId, localAiSettings } = payload;
+    const convex = getConvexClient();
     const dag = JSON.parse(dagJson);
     const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
     if (nodes.length === 0) {
@@ -287,7 +305,7 @@ export const executeWorkflow = task({
     const remaining = new Set(nodes.map((node: any) => node.id));
 
     while (remaining.size > 0) {
-      if (await isWorkflowStopped(workflowId)) {
+      if (await isWorkflowStopped(workflowId, convex)) {
         return { success: false, stopped: true, completed };
       }
 
@@ -332,6 +350,7 @@ export const executeWorkflow = task({
               interpolatedParams,
               completed,
               tools,
+              localAiSettings,
             );
 
             completed[node.id] = result;
