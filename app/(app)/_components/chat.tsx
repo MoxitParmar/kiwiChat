@@ -400,7 +400,14 @@ function ConversationChat() {
       return;
     }
 
+    // If we already hydrated this conversation and persistedMessages hasn't loaded yet,
+    // don't reset messages to avoid race condition where pending messages get cleared
     if (persistedMessages === undefined) {
+      if (hydratedConversationIdRef.current === selectedConversationId) {
+        // Already hydrated, keep existing messages
+        return;
+      }
+      // First time loading this conversation, wait for persistedMessages
       return;
     }
 
@@ -520,7 +527,11 @@ function ConversationChat() {
 
     const result = await createConversation({});
     const nextConversationId = result.conversationId;
+    
+    // Update the ref synchronously before router.replace() to avoid race condition
+    // where sendMessage() is called before URL params are updated
     conversationIdRef.current = nextConversationId;
+    hydratedConversationIdRef.current = nextConversationId;
 
     const params = new URLSearchParams(searchParams.toString());
     params.set('conversationId', nextConversationId);

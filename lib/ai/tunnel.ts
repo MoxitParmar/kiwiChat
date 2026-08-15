@@ -1,4 +1,21 @@
+// Suppress the DEP0169 warning from localtunnel using url.parse()
+// TODO: Remove when localtunnel migrates to WHATWG URL API
+const originalEmitWarning = (process as any).emitWarning;
+(process as any).emitWarning = function (warning: any, type?: any, code?: any, ctor?: any) {
+  if (typeof warning === 'string' && warning.includes('url.parse()')) {
+    return;
+  }
+  if (warning instanceof Error && warning.message?.includes('url.parse()')) {
+    return;
+  }
+  return originalEmitWarning.call(process, warning, type, code, ctor);
+};
+
 import localtunnel from 'localtunnel';
+
+// Restore original emitWarning
+(process as any).emitWarning = originalEmitWarning;
+
 import {
   normalizeLocalAiSettings,
   type LocalAiSettings,
