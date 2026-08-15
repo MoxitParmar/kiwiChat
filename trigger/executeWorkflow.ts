@@ -7,7 +7,18 @@ import { generateText, stepCountIs } from 'ai';
 import { getLocalModel } from '@/lib/ai/provider';
 import type { LocalAiSettings } from '@/lib/ai/local-settings';
 
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+function getConvexClient() {
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? process.env.CONVEX_URL;
+
+  if (!convexUrl) {
+    throw new Error(
+      'Missing Convex deployment URL. Set NEXT_PUBLIC_CONVEX_URL or CONVEX_URL in the environment before running the workflow task.'
+    );
+  }
+
+  return new ConvexHttpClient(convexUrl);
+}
+
 const NODE_START_STAGGER_MS = 800;
 const NODE_RETRY_ATTEMPTS = 5;
 const NODE_RETRY_BASE_DELAY_MS = 4000;
@@ -183,7 +194,7 @@ async function runNodeWithRetry(
   throw new Error(`Node failed after ${NODE_RETRY_ATTEMPTS} attempts: ${getErrorMessage(lastError)}`);
 }
 
-async function isWorkflowStopped(workflowId: string) {
+async function isWorkflowStopped(workflowId: string, convex: ConvexHttpClient) {
   const workflow = await convex.query(api.workflows.getWorkflow, {
     workflowId: workflowId as any,
   });
@@ -276,6 +287,7 @@ export const executeWorkflow = task({
     localAiSettings?: Partial<LocalAiSettings>;
   }) => {
     const { workflowId, dagJson, userId, localAiSettings } = payload;
+    const convex = getConvexClient();
     const dag = JSON.parse(dagJson);
     const nodes = Array.isArray(dag?.nodes) ? dag.nodes : [];
     if (nodes.length === 0) {
@@ -292,7 +304,7 @@ export const executeWorkflow = task({
     const remaining = new Set(nodes.map((node: any) => node.id));
 
     while (remaining.size > 0) {
-      if (await isWorkflowStopped(workflowId)) {
+      if (await isWorkflowStopped(workflowId, convex)) {
         return { success: false, stopped: true, completed };
       }
 
