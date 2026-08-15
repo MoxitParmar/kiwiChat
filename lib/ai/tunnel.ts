@@ -39,6 +39,8 @@ function isLocalhostLikeUrl(url: string) {
   }
 }
 
+export { isLocalhostLikeUrl };
+
 export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettings> | null): Promise<LocalAiSettings> {
   const settings = normalizeLocalAiSettings(raw);
 
@@ -61,41 +63,39 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
     return settings;
   }
 
-  // User provided a localhost URL, automatically create a public tunnel for it
-  // This works the same way everywhere - converts localhost to a public URL
-  // for use in API routes, Trigger.dev background tasks, and workflows
-  try {
-    const parsed = new URL(settings.baseURL);
-    const port = Number(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'));
-    const pathname = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+  // If we're on the server side (API routes or Trigger tasks), try to get tunnel from API endpoint
+  if (typeof window === 'undefined') {
+    try {
+      const parsed = new URL(settings.baseURL);
+      const port = Number(parsed.port || 11434);
+      const pathname = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
 
-    // Create tunnel with timeout to prevent indefinite hanging
-    const tunnelPromise = localtunnel({
-      port,
-      host: process.env.LOCALTUNNEL_HOST || 'https://loca.lt',
-      subdomain: process.env.LOCALTUNNEL_SUBDOMAIN || undefined,
-      local_host: '127.0.0.1',
-    });
+      // Call our own API endpoint to get tunnel URL
+      const response = await fetch(`http://localhost:3000/api/ai/tunnel-config?port=${port}`, {
+        method: 'GET',
+      });
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Tunnel connection timeout. Make sure your local LLM server is running on the specified port.')), 30000)
-    );
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to get tunnel configuration');
+      }
 
-    const tunnel = await Promise.race([tunnelPromise, timeoutPromise]);
+      const { url } = await response.json();
+      const publicUrl = new URL(url);
+      if (pathname) {
+        publicUrl.pathname = pathname;
+      }
 
-    const publicUrl = new URL(tunnel.url);
-    if (pathname) {
-      publicUrl.pathname = pathname;
+      return {
+        ...settings,
+        baseURL: publicUrl.toString().replace(/\/$/, ''),
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(msg);
     }
-
-    return {
-      ...settings,
-      baseURL: publicUrl.toString().replace(/\/$/, ''),
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    throw new Error(
-      `Failed to create tunnel for local LLM: ${errorMessage}`
-    );
   }
+
+  // Client side - return as-is, will be resolved via hook
+  return settings;
 }
