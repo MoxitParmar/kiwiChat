@@ -321,7 +321,7 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+const streamdownPlugins = { cjk, code, math, mermaid } as any;
 const streamdownComponents = {
   p: ({ children, ...props }: any) => (
     <div {...props} suppressHydrationWarning>
