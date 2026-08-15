@@ -332,9 +332,11 @@ function ConversationChat() {
     transport: new DefaultChatTransport({
       fetch: async (input, init) => {
         const body = JSON.parse((init?.body as string) ?? '{}');
+        const localAiSettings = getRuntimeLocalAiSettings();
+
         body.workflowMode = workflowModeRef.current;
         body.conversationId = conversationIdRef.current ?? undefined;
-        body.localAiSettings = getRuntimeLocalAiSettings();
+        body.localAiSettings = localAiSettings;
 
         if (workflowModeRef.current) {
           // For workflow mode, use a plain fetch and handle JSON response
@@ -342,7 +344,17 @@ function ConversationChat() {
             ...init,
             body: JSON.stringify(body),
           });
-          if (!res.ok) return res;
+          
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            const errorMessage = errorData?.error || `Workflow error: ${res.statusText}`;
+            toast.error(errorMessage);
+            return new Response(
+              new ReadableStream({ start(c) { c.close(); } }),
+              { headers: { 'Content-Type': 'text/event-stream' } }
+            );
+          }
+          
           const data = await res.json();
           if (data.type === 'workflow-plan') {
             setWorkflowPlan({ dag: data.dag, workflowId: data.workflowId });
@@ -354,7 +366,20 @@ function ConversationChat() {
           );
         }
 
-        return fetch(input, { ...init, body: JSON.stringify(body) });
+        const res = await fetch(input, { ...init, body: JSON.stringify(body) });
+        
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          const errorMessage = errorData?.error || `Chat error: ${res.statusText}`;
+          toast.error(errorMessage);
+          // Return an error stream response
+          return new Response(
+            new ReadableStream({ start(c) { c.close(); } }),
+            { status: 400, headers: { 'Content-Type': 'text/event-stream' } }
+          );
+        }
+        
+        return res;
       },
     }),
   });
@@ -400,7 +425,14 @@ function ConversationChat() {
       return;
     }
 
+    // If we already hydrated this conversation and persistedMessages hasn't loaded yet,
+    // don't reset messages to avoid race condition where pending messages get cleared
     if (persistedMessages === undefined) {
+      if (hydratedConversationIdRef.current === selectedConversationId) {
+        // Already hydrated, keep existing messages
+        return;
+      }
+      // First time loading this conversation, wait for persistedMessages
       return;
     }
 
@@ -520,7 +552,11 @@ function ConversationChat() {
 
     const result = await createConversation({});
     const nextConversationId = result.conversationId;
+    
+    // Update the ref synchronously before router.replace() to avoid race condition
+    // where sendMessage() is called before URL params are updated
     conversationIdRef.current = nextConversationId;
+    hydratedConversationIdRef.current = nextConversationId;
 
     const params = new URLSearchParams(searchParams.toString());
     params.set('conversationId', nextConversationId);

@@ -39,7 +39,6 @@
     "convex": "^1.44.0",
     "embla-carousel-react": "^8.6.0",
     "framer-motion": "^12.43.0",
-    "localtunnel": "^2.0.2",
     "lucide-react": "^1.31.0",
     "media-chrome": "^4.19.2",
     "motion": "^12.43.0",
@@ -63,7 +62,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@trigger.dev/build": "4.5.11",
-    "@types/localtunnel": "^2.0.4",
     "@types/node": "^20.19.43",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

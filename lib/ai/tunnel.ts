@@ -1,26 +1,7 @@
-import localtunnel from 'localtunnel';
 import {
   normalizeLocalAiSettings,
   type LocalAiSettings,
 } from '@/lib/ai/local-settings';
-
-function isLocalhostLikeUrl(url: string) {
-  if (!url) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(url);
-    return (
-      parsed.hostname === 'localhost' ||
-      parsed.hostname === '127.0.0.1' ||
-      parsed.hostname === '0.0.0.0' ||
-      parsed.hostname.endsWith('.localhost')
-    );
-  } catch {
-    return false;
-  }
-}
 
 export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettings> | null): Promise<LocalAiSettings> {
   const settings = normalizeLocalAiSettings(raw);
@@ -40,35 +21,5 @@ export async function resolveModelSettingsForRuntime(raw?: Partial<LocalAiSettin
     };
   }
 
-  if (!isLocalhostLikeUrl(settings.baseURL)) {
-    return settings;
-  }
-
-  try {
-    const parsed = new URL(settings.baseURL);
-    const port = Number(parsed.port || (parsed.protocol === 'https:' ? '443' : '80'));
-    const pathname = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
-
-    const tunnel = await localtunnel({
-      port,
-      host: process.env.LOCALTUNNEL_HOST || 'https://loca.lt',
-      subdomain: process.env.LOCALTUNNEL_SUBDOMAIN || undefined,
-      local_host: '127.0.0.1',
-    });
-
-    const publicUrl = new URL(tunnel.url);
-    if (pathname) {
-      publicUrl.pathname = pathname;
-    }
-
-    return {
-      ...settings,
-      baseURL: publicUrl.toString().replace(/\/$/, ''),
-    };
-  } catch (error) {
-    const hint = settings.baseURL;
-    throw new Error(
-      `Unable to create a public tunnel for the local AI server at ${hint}. Configure a public model endpoint or run a local tunnel before starting workflow execution.`
-    );
-  }
+  return settings;
 }

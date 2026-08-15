@@ -12,7 +12,7 @@ export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   model: 'llama3.1',
 };
 
-function isLocalhostLikeUrl(url: string) {
+export function isLocalhostLikeUrl(url: string) {
   if (!url) {
     return false;
   }
