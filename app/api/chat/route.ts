@@ -5,7 +5,7 @@ import { ConvexHttpClient } from 'convex/browser';
 import { streamText, UIMessage, convertToModelMessages, stepCountIs } from 'ai';
 import { api } from '@/convex/_generated/api';
 import { runPlanner } from '@/lib/ai/planner';
-import { getLocalModel, LOCAL_LLM_MODEL } from '@/lib/ai/provider';
+import { getLocalModel, getResolvedLocalModelSettings, LOCAL_LLM_MODEL } from '@/lib/ai/provider';
 import type { LocalAiSettings } from '@/lib/ai/local-settings';
 
 const composioApiKey = process.env.COMPOSIO_API_KEY;
@@ -80,8 +80,10 @@ export async function POST(req: Request) {
   const tools = composioToolsResult?.tools;
   const mcpClient = composioToolsResult?.client;
 
+  const chatSettings = await getResolvedLocalModelSettings({ ...localAiSettings, model: localAiSettings?.model ?? CHAT_MODEL });
+  const model = await getLocalModel(chatSettings);
   const result = streamText({
-    model: getLocalModel({ ...localAiSettings, model: localAiSettings?.model ?? CHAT_MODEL }),
+    model,
     messages: await convertToModelMessages(messages),
     system: CONNECT_MARKER_INSTRUCTION,
     stopWhen: stepCountIs(10),

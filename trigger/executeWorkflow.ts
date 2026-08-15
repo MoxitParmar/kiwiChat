@@ -254,8 +254,9 @@ async function runNodeRequest(
     : '';
 
   const nodePrompt = `${requestText}${context}`;
+  const model = await getLocalModel(localAiSettings);
   const result = await generateText({
-    model: getLocalModel(localAiSettings),
+    model,
     system:
       'You are executing one automation step. Use tools whenever the request needs external data or side effects (e.g., GitHub fetch, Slack message). Always finish with a concise final text that states what was done and key result details.',
     prompt: nodePrompt,

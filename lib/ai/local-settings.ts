@@ -12,6 +12,24 @@ export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   model: 'llama3.1',
 };
 
+function isLocalhostLikeUrl(url: string) {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '127.0.0.1' ||
+      parsed.hostname === '0.0.0.0' ||
+      parsed.hostname.endsWith('.localhost')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function normalizeLocalAiSettings(raw?: Partial<LocalAiSettings> | null): LocalAiSettings {
   const next = {
     ...DEFAULT_LOCAL_AI_SETTINGS,
@@ -23,6 +41,34 @@ export function normalizeLocalAiSettings(raw?: Partial<LocalAiSettings> | null):
     apiKey: (next.apiKey ?? '').trim() || DEFAULT_LOCAL_AI_SETTINGS.apiKey,
     model: (next.model ?? '').trim() || DEFAULT_LOCAL_AI_SETTINGS.model,
   };
+}
+
+export function resolveRuntimeAiSettings(raw?: Partial<LocalAiSettings> | null): LocalAiSettings {
+  const settings = normalizeLocalAiSettings(raw);
+  const envPublicBaseUrl = (
+    process.env.NEXT_PUBLIC_LOCAL_AI_PUBLIC_BASE_URL ||
+    process.env.LOCAL_AI_PUBLIC_BASE_URL ||
+    process.env.NEXT_PUBLIC_AI_PUBLIC_BASE_URL ||
+    process.env.AI_PUBLIC_BASE_URL ||
+    ''
+  ).trim();
+
+  if (envPublicBaseUrl) {
+    return {
+      ...settings,
+      baseURL: envPublicBaseUrl,
+    };
+  }
+
+  if (isLocalhostLikeUrl(settings.baseURL)) {
+    return settings;
+  }
+
+  return settings;
+}
+
+export function getRuntimeLocalAiSettings(): LocalAiSettings {
+  return resolveRuntimeAiSettings(getStoredLocalAiSettings());
 }
 
 export function getStoredLocalAiSettings(): LocalAiSettings {

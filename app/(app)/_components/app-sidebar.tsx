@@ -349,6 +349,7 @@ export function SidebarWithChatHistory() {
                 placeholder="llama3.1"
               />
             </div>
+
           </div>
 
           <DialogFooter>

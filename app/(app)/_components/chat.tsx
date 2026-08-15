@@ -43,7 +43,7 @@ import { CheckIcon, CopyIcon, PencilIcon, PlusIcon, RefreshCwIcon, SearchIcon, T
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
-import { getStoredLocalAiSettings } from '@/lib/ai/local-settings';
+import { getRuntimeLocalAiSettings } from '@/lib/ai/local-settings';
 import {
   Dialog,
   DialogContent,
@@ -334,7 +334,7 @@ function ConversationChat() {
         const body = JSON.parse((init?.body as string) ?? '{}');
         body.workflowMode = workflowModeRef.current;
         body.conversationId = conversationIdRef.current ?? undefined;
-        body.localAiSettings = getStoredLocalAiSettings();
+        body.localAiSettings = getRuntimeLocalAiSettings();
 
         if (workflowModeRef.current) {
           // For workflow mode, use a plain fetch and handle JSON response
@@ -1192,7 +1192,7 @@ function ConversationChat() {
                             body: JSON.stringify({
                               workflowId: workflowPlan.workflowId,
                               dagOverride: workflowPlan.dag,
-                              localAiSettings: getStoredLocalAiSettings(),
+                              localAiSettings: getRuntimeLocalAiSettings(),
                             }),
                           });
                           if (!res.ok) throw new Error('Failed to start workflow');
