@@ -258,6 +258,7 @@ function ConversationChat() {
   const [isSaveWorkflowDialogOpen, setIsSaveWorkflowDialogOpen] = useState(false);
   const [workflowBookmarkName, setWorkflowBookmarkName] = useState('');
   const [isSavingWorkflow, setIsSavingWorkflow] = useState(false);
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
   const [toolkits, setToolkits] = useState<ToolkitListItem[]>([]);
   const [toolkitsError, setToolkitsError] = useState<string | null>(null);
   const [isLoadingToolkits, setIsLoadingToolkits] = useState(false);
@@ -545,24 +546,28 @@ function ConversationChat() {
     setEditingText('');
   };
 
-  const ensureConversation = async () => {
-    if (selectedConversationId) {
-      return selectedConversationId;
+  const handleCreateConversation = async () => {
+    if (isCreatingConversation || selectedConversationId) {
+      return;
     }
 
-    const result = await createConversation({});
-    const nextConversationId = result.conversationId;
-    
-    // Update the ref synchronously before router.replace() to avoid race condition
-    // where sendMessage() is called before URL params are updated
-    conversationIdRef.current = nextConversationId;
-    hydratedConversationIdRef.current = nextConversationId;
+    setIsCreatingConversation(true);
+    try {
+      const result = await createConversation({});
+      const nextConversationId = result.conversationId;
 
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('conversationId', nextConversationId);
-    router.replace(`${pathname}?${params.toString()}`);
+      conversationIdRef.current = nextConversationId;
+      hydratedConversationIdRef.current = nextConversationId;
 
-    return nextConversationId;
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('conversationId', nextConversationId);
+      router.replace(`${pathname}?${params.toString()}`);
+    } catch (error) {
+      console.error(error);
+      toast.error('Could not create a new chat. Please try again.');
+    } finally {
+      setIsCreatingConversation(false);
+    }
   };
 
   const fetchToolkitData = async () => {
@@ -977,10 +982,25 @@ function ConversationChat() {
       <Conversation className="rounded-xl border bg-sidebar">
         <ConversationContent className="p-4">
           {!hasMessages && (
-            <ConversationEmptyState
-              description="Ask anything to start the conversation."
-              title="Your Agentic AI Chat "
-            />
+            <ConversationEmptyState title="Your Agentic AI Chat">
+              <>
+                <div className="space-y-1">
+                  <h3 className="font-medium text-sm">Your Agentic AI Chat</h3>
+                  <p className="text-muted-foreground text-sm">
+                    Create a chat to start the conversation.
+                  </p>
+                </div>
+                <button
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+                  disabled={isCreatingConversation || Boolean(selectedConversationId)}
+                  onClick={() => void handleCreateConversation()}
+                  type="button"
+                >
+                  <PlusIcon className="size-4" />
+                  {isCreatingConversation ? 'Creating chat...' : 'Create new chat'}
+                </button>
+              </>
+            </ConversationEmptyState>
           )}
 
           {messages.map((message, index) => {
@@ -1450,7 +1470,7 @@ function ConversationChat() {
           onSubmit={async ({ text }, event) => {
             event.preventDefault();
             const trimmed = text.trim();
-            if (!trimmed) {
+            if (!trimmed || !selectedConversationId) {
               return;
             }
 
@@ -1463,15 +1483,15 @@ function ConversationChat() {
               postedWorkflowSummaryRef.current = null;
             }
 
-            await ensureConversation();
             sendMessage({ text: trimmed });
           }}
         >
           <PromptInputBody>
             <PromptInputTextarea
+              disabled={!selectedConversationId}
               placeholder={workflowMode
                 ? "Describe your workflow... e.g. Get my GitHub repos and send a summary to Slack"
-                : "Type your message..."
+                : selectedConversationId ? "Type your message..." : "Create a chat to start messaging..."
               }
             />
           </PromptInputBody>
@@ -1493,6 +1513,7 @@ function ConversationChat() {
                     ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-border bg-background text-muted-foreground hover:bg-muted'
                 }`}
+                disabled={!selectedConversationId}
                 onChange={(event) => setWorkflowMode(event.target.value === "workflow")}
                 value={workflowMode ? "workflow" : "ask"}
               >
@@ -1501,13 +1522,18 @@ function ConversationChat() {
               </select>
               <button
                 type="button"
+                disabled={!selectedConversationId}
                 onClick={() => setIsToolkitDialogOpen(true)}
-                className="rounded-full border px-3 py-1 text-xs font-medium transition-colors border-border bg-background text-muted-foreground hover:bg-muted"
+                className="rounded-full border px-3 py-1 text-xs font-medium transition-colors border-border bg-background text-muted-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
               >
                 Toolkits
               </button>
             </div>
-            <PromptInputSubmit onStop={stop} status={status} />
+            <PromptInputSubmit
+              disabled={!selectedConversationId}
+              onStop={stop}
+              status={status}
+            />
           </PromptInputFooter>
         </PromptInput>
       </div>
